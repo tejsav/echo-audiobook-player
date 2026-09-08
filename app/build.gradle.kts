@@ -26,8 +26,10 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // R8 is off until the shrunk build can actually be run on a device. Shipping a
+            // minified APK nobody has launched trades a smaller download for a crash risk.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
