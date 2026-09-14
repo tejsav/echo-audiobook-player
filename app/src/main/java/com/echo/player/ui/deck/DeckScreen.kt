@@ -66,6 +66,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.echo.player.data.Book
 import com.echo.player.data.Chapter
 import com.echo.player.playback.MediaIds
+import com.echo.player.playback.RESUME_REWIND_MS
 import com.echo.player.playback.PlaybackUiState
 import com.echo.player.playback.SleepMode
 import com.echo.player.ui.dial.Dial
@@ -383,8 +384,8 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                 currentIndex = currentIndexOf(sheetBook, playback),
                 isPlaying = playback.bookId == sheetBook.id && playback.isPlaying,
                 jumpBack = lastJump?.takeIf { it.bookId == sheetBook.id },
-                onPlay = { index ->
-                    viewModel.playChapter(sheetBook, index)
+                onPlay = { index, startMs ->
+                    viewModel.playChapter(sheetBook, index, startMs)
                     showTracksSheet = false
                 },
                 onToggleCompleted = { index, done -> viewModel.setCompleted(sheetBook, index, done) },
@@ -842,7 +843,7 @@ private fun TracksSheet(
     currentIndex: Int,
     isPlaying: Boolean,
     jumpBack: Jump?,
-    onPlay: (Int) -> Unit,
+    onPlay: (Int, Long) -> Unit,
     onToggleCompleted: (Int, Boolean) -> Unit,
     onCompleteBefore: (Int) -> Unit,
     onJumpBack: () -> Unit
@@ -901,7 +902,7 @@ private fun TracksSheet(
                 onArm = {
                     armedIndex = if (armedIndex == index || index == currentIndex) null else index
                 },
-                onPlay = { onPlay(index) },
+                onPlay = { startMs -> onPlay(index, startMs) },
                 onToggleCompleted = { onToggleCompleted(index, !chapter.completed) }
             )
             Spacer(Modifier.height(4.dp))
@@ -917,7 +918,7 @@ private fun TrackRow(
     isPlaying: Boolean,
     armed: Boolean,
     onArm: () -> Unit,
-    onPlay: () -> Unit,
+    onPlay: (Long) -> Unit,
     onToggleCompleted: () -> Unit
 ) {
     Column(
@@ -980,8 +981,26 @@ private fun TrackRow(
             )
         }
         if (armed) {
-            Row(Modifier.padding(start = 46.dp, end = 12.dp, bottom = 10.dp)) {
-                PillButton(text = "Play from start", selected = true, onClick = onPlay)
+            // A chapter left part-way resumes where it was left, 15 seconds back like any pick-up.
+            val resumeAt = if (!chapter.completed && chapter.listenedMs > 0L) {
+                (chapter.listenedMs - RESUME_REWIND_MS).coerceAtLeast(0L)
+            } else {
+                null
+            }
+            Row(
+                modifier = Modifier.padding(start = 46.dp, end = 12.dp, bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (resumeAt != null) {
+                    PillButton(
+                        text = "Resume at " + formatClock(resumeAt),
+                        selected = true,
+                        onClick = { onPlay(resumeAt) }
+                    )
+                    PillButton(text = "From start", onClick = { onPlay(0L) })
+                } else {
+                    PillButton(text = "Play from start", selected = true, onClick = { onPlay(0L) })
+                }
             }
         }
     }

@@ -173,10 +173,10 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun playChapter(book: Book, index: Int) {
+    fun playChapter(book: Book, index: Int, startMs: Long = 0L) {
         rememberJumpFrom(book, toIndex = index)
         if (isLoaded(book)) {
-            connection.playChapter(index)
+            connection.seekToChapter(index, startMs)
             return
         }
         viewModelScope.launch {
@@ -187,7 +187,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
                 chapters = loaded.chapters,
                 autoPlay = true,
                 startIndex = index,
-                startPositionMs = 0L
+                startPositionMs = startMs
             )
         }
     }

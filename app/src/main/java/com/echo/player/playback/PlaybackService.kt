@@ -117,9 +117,21 @@ class PlaybackService : MediaSessionService() {
             newPosition: Player.PositionInfo,
             reason: Int
         ) {
-            // A scrub or a skip is a deliberate move; record it straight away rather than
-            // waiting for the next heartbeat. It is not recorded as listening.
-            if (reason == Player.DISCONTINUITY_REASON_SEEK) saveProgress()
+            if (reason != Player.DISCONTINUITY_REASON_SEEK) return
+            // Leaving one chapter for another: keep the exact spot it was left at, so going back
+            // to it resumes there instead of starting over. A scrub within a chapter is not
+            // recorded as listening.
+            if (oldPosition.mediaItemIndex != newPosition.mediaItemIndex &&
+                SystemClock.elapsedRealtime() >= suppressSavesUntil
+            ) {
+                MediaIds.parse(oldPosition.mediaItem?.mediaId)?.let { left ->
+                    val leftAt = oldPosition.positionMs
+                    appScope.launch {
+                        repository.recordListened(left.bookId, left.chapterIndex, leftAt)
+                    }
+                }
+            }
+            saveProgress()
         }
 
         override fun onPlayerError(error: PlaybackException) {

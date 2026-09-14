@@ -25,6 +25,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
+/** How far to step back when picking a series or a chapter up again. */
+const val RESUME_REWIND_MS = 15_000L
+
 data class PlaybackUiState(
     val isConnected: Boolean = false,
     val bookId: String? = null,
@@ -252,7 +255,5 @@ class PlayerConnection(private val context: Context) {
         const val POSITION_POLL_MS = 500L
         const val RESTART_THRESHOLD_MS = 3_000L
 
-        /** How far to step back when picking a series up again. */
-        const val RESUME_REWIND_MS = 15_000L
     }
 }
