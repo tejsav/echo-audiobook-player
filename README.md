@@ -35,6 +35,15 @@ when you come back.
 - **Your own cover art.** Pick a picture from the gallery; it becomes the record label on the disc
   and the artwork on every chapter, including the lock screen.
 - **Name your series** and give it an author or narrator.
+- **Knows what you actually heard.** Each chapter shows as unheard, partly heard or finished. A
+  chapter is only marked finished when it plays to its end, so a skipped one never looks done.
+- **Every chapter remembers where you left it.** Go back to a half-heard chapter and it offers to
+  resume there, 15 seconds back.
+- **Hard to lose your place by accident.** Track rows need a second tap to play, every chapter jump
+  offers "Go back", and headset, Bluetooth and notification controls only play and pause — they
+  cannot skip chapters.
+- **Real stream details** under the disc — codec, sample rate, bitrate, channels — read from the
+  file. Bit depth appears only for lossless audio; nothing is guessed.
 - Track list, playback speed 0.75×–2× per series, and a sleep timer (countdown or end-of-chapter).
 - Follows the system light/dark theme.
 
