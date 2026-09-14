@@ -2,15 +2,22 @@ package com.echo.player.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import androidx.annotation.OptIn
+import androidx.core.content.IntentCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -26,9 +33,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 /**
- * Keeps playback alive independently of the UI and is the only place that writes resume positions.
+ * Keeps playback alive independently of the UI and is the only place that writes resume positions
+ * and listening history.
  *
  * Positions are saved on a 5 second heartbeat while playing, plus on every pause, chapter change,
  * end of book, task removal and teardown — so "where you left off" survives backgrounding, swiping
@@ -48,6 +57,14 @@ class PlaybackService : MediaSessionService() {
     /** Saves are ignored until this moment; see [Player.Listener.onTimelineChanged]. */
     private var suppressSavesUntil = 0L
 
+    /** The chapter playing before the latest transition, so a natural finish can be credited. */
+    private var currentItemId: String? = null
+
+    /** Tags read from each file once; opening a file is not something to repeat every tick. */
+    private val measured = HashMap<String, MeasuredTags>()
+
+    private data class MeasuredTags(val bitrate: Int?, val bitsPerSample: Int?)
+
     private val listener = object : Player.Listener {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -64,6 +81,11 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // Playing through to the end is the only thing that marks a chapter done by itself.
+            // A skip moves on without crediting the chapter it left.
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) markFinished(currentItemId)
+            currentItemId = mediaItem?.mediaId
+
             // The position now reads as "start of the next chapter", which is exactly the
             // resume point we want once a chapter has been listened through.
             if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) saveProgress()
@@ -72,13 +94,22 @@ class PlaybackService : MediaSessionService() {
             ) {
                 player.pause()
             }
+            publishStats()
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            if (playbackState == Player.STATE_ENDED) {
-                saveProgress()
-                SleepTimer.cancel()
+            when (playbackState) {
+                Player.STATE_ENDED -> {
+                    markFinished(currentItemId)
+                    saveProgress()
+                    SleepTimer.cancel()
+                }
+                Player.STATE_READY -> publishStats()
             }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            publishStats()
         }
 
         override fun onPositionDiscontinuity(
@@ -87,12 +118,70 @@ class PlaybackService : MediaSessionService() {
             reason: Int
         ) {
             // A scrub or a skip is a deliberate move; record it straight away rather than
-            // waiting for the next heartbeat.
+            // waiting for the next heartbeat. It is not recorded as listening.
             if (reason == Player.DISCONTINUITY_REASON_SEEK) saveProgress()
         }
 
         override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "Playback error: " + error.errorCodeName, error)
+        }
+    }
+
+    private val sessionCallback = object : MediaSession.Callback {
+
+        /**
+         * Only this app's own controller may change chapters. The notification, lock screen,
+         * watches, cars and Bluetooth devices all connect through here as well, and a next button
+         * that drops you into a different chapter of a long talk is a way to lose your place.
+         */
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            val external = session.isMediaNotificationController(controller) ||
+                controller.packageName != packageName
+            if (!external) return super.onConnect(session, controller)
+
+            val commands = Player.Commands.Builder()
+                .addAllCommands()
+                .remove(Player.COMMAND_SEEK_TO_PREVIOUS)
+                .remove(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                .remove(Player.COMMAND_SEEK_TO_NEXT)
+                .remove(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                .remove(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailablePlayerCommands(commands)
+                .build()
+        }
+
+        /**
+         * Headset and Bluetooth buttons play and pause, nothing else. Media3 would otherwise read
+         * a double press as "next", and many headsets send next and previous by themselves.
+         */
+        override fun onMediaButtonEvent(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            intent: Intent
+        ): Boolean {
+            val event = IntentCompat.getParcelableExtra(
+                intent,
+                Intent.EXTRA_KEY_EVENT,
+                KeyEvent::class.java
+            ) ?: return false
+
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_HEADSETHOOK,
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ->
+                        if (player.isPlaying) player.pause() else player.play()
+                    KeyEvent.KEYCODE_MEDIA_PLAY -> player.play()
+                    KeyEvent.KEYCODE_MEDIA_PAUSE,
+                    KeyEvent.KEYCODE_MEDIA_STOP -> player.pause()
+                    // Next, previous, fast-forward and rewind are swallowed on purpose.
+                }
+            }
+            return true
         }
     }
 
@@ -128,6 +217,7 @@ class PlaybackService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(openApp)
+            .setCallback(sessionCallback)
             .build()
 
         startHeartbeat()
@@ -149,6 +239,7 @@ class PlaybackService : MediaSessionService() {
         saveProgressBlocking()
         serviceScope.cancel()
         SleepTimer.cancel()
+        NowPlaying.publish(null)
         mediaSession?.run {
             player.removeListener(listener)
             player.release()
@@ -176,7 +267,10 @@ class PlaybackService : MediaSessionService() {
                 }
 
                 ticks++
-                if (ticks % SAVE_EVERY_TICKS == 0) saveProgress()
+                if (ticks % SAVE_EVERY_TICKS == 0) {
+                    saveProgress()
+                    recordListened()
+                }
             }
         }
     }
@@ -187,6 +281,25 @@ class PlaybackService : MediaSessionService() {
         appScope.launch {
             repository.saveProgress(point.bookId, point.chapterIndex, point.positionMs)
         }
+    }
+
+    /**
+     * How far a chapter has been heard. Only the playback heartbeat calls this, never a seek, so
+     * scrubbing ahead is not counted as listening.
+     *
+     * ponytail: a high-water mark, so playing on for a few seconds after a forward scrub counts
+     * the skipped stretch as heard. Needs stored heard-ranges if that ever matters.
+     */
+    private fun recordListened() {
+        val point = currentPoint() ?: return
+        appScope.launch {
+            repository.recordListened(point.bookId, point.chapterIndex, point.positionMs)
+        }
+    }
+
+    private fun markFinished(mediaId: String?) {
+        val finished = MediaIds.parse(mediaId) ?: return
+        appScope.launch { repository.markCompleted(finished.bookId, finished.chapterIndex) }
     }
 
     /**
@@ -218,6 +331,82 @@ class PlaybackService : MediaSessionService() {
             chapterIndex = parsed.chapterIndex,
             positionMs = player.currentPosition.coerceAtLeast(0L)
         )
+    }
+
+    /** Publishes the format actually being decoded. Nothing is shown until it is known. */
+    private fun publishStats() {
+        val item = player.currentMediaItem
+        val mediaId = item?.mediaId
+        if (mediaId == null) {
+            NowPlaying.publish(null)
+            return
+        }
+
+        val format = player.currentTracks.groups
+            .firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+            ?.let { group ->
+                (0 until group.length)
+                    .firstOrNull { group.isTrackSelected(it) }
+                    ?.let { group.getTrackFormat(it) }
+            }
+
+        if (format == null) {
+            // The new chapter's tracks are not read yet: clear rather than show the last chapter's.
+            if (NowPlaying.stats.value?.mediaId != mediaId) NowPlaying.publish(null)
+            return
+        }
+
+        val cached = measured[mediaId]
+        NowPlaying.publish(statsFrom(mediaId, format, cached))
+
+        val uri = item.localConfiguration?.uri ?: return
+        val declared = listOf(format.averageBitrate, format.bitrate, format.peakBitrate)
+        if (cached == null && needsMeasuring(format.sampleMimeType, format.pcmEncoding, declared)) {
+            serviceScope.launch {
+                val tags = withContext(Dispatchers.IO) { readTags(uri) }
+                measured[mediaId] = tags
+                if (player.currentMediaItem?.mediaId == mediaId) {
+                    NowPlaying.publish(statsFrom(mediaId, format, tags))
+                }
+            }
+        }
+    }
+
+    private fun statsFrom(mediaId: String, format: Format, tags: MeasuredTags?): AudioStats? =
+        buildStats(
+            mediaId = mediaId,
+            mimeType = format.sampleMimeType,
+            codecs = format.codecs,
+            sampleRate = format.sampleRate,
+            channelCount = format.channelCount,
+            pcmEncoding = format.pcmEncoding,
+            declaredBitrates = listOf(format.averageBitrate, format.bitrate, format.peakBitrate),
+            measuredBitrate = tags?.bitrate,
+            reportedBitsPerSample = tags?.bitsPerSample
+        )
+
+    private fun readTags(uri: Uri): MeasuredTags {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(this, uri)
+            MeasuredTags(
+                bitrate = retriever
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
+                    ?.toIntOrNull(),
+                bitsPerSample = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    retriever
+                        .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)
+                        ?.toIntOrNull()
+                } else {
+                    null
+                }
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read stream details for " + uri, e)
+            MeasuredTags(null, null)
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     companion object {

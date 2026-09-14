@@ -80,6 +80,33 @@ interface LibraryDao {
     @Query("UPDATE books SET coverPath = :coverPath WHERE id = :bookId")
     suspend fun updateCover(bookId: String, coverPath: String?)
 
+    /** Extends the heard mark; never moves it backwards. */
+    @Query(
+        "UPDATE chapters SET listenedMs = MAX(listenedMs, :positionMs) " +
+            "WHERE bookId = :bookId AND chapter_index = :chapterIndex"
+    )
+    suspend fun recordListened(bookId: String, chapterIndex: Int, positionMs: Long)
+
+    @Query(
+        "UPDATE chapters SET completed = 1, listenedMs = MAX(listenedMs, durationMs) " +
+            "WHERE bookId = :bookId AND chapter_index = :chapterIndex"
+    )
+    suspend fun markCompleted(bookId: String, chapterIndex: Int)
+
+    /** Clearing a mark also clears what was heard, so the row honestly reads as unplayed again. */
+    @Query(
+        "UPDATE chapters SET completed = :completed, " +
+            "listenedMs = CASE WHEN :completed THEN MAX(listenedMs, durationMs) ELSE 0 END " +
+            "WHERE bookId = :bookId AND chapter_index = :chapterIndex"
+    )
+    suspend fun setCompleted(bookId: String, chapterIndex: Int, completed: Boolean)
+
+    @Query(
+        "UPDATE chapters SET completed = 1, listenedMs = MAX(listenedMs, durationMs) " +
+            "WHERE bookId = :bookId AND chapter_index < :chapterIndex"
+    )
+    suspend fun completeBefore(bookId: String, chapterIndex: Int)
+
     @Transaction
     suspend fun replaceBook(book: Book, chapters: List<Chapter>) {
         upsertBook(book)

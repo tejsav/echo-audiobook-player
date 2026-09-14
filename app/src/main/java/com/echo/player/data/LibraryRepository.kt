@@ -46,6 +46,18 @@ class LibraryRepository(private val context: Context) {
 
     suspend fun saveSpeed(bookId: String, speed: Float) = dao.updateSpeed(bookId, speed)
 
+    suspend fun recordListened(bookId: String, chapterIndex: Int, positionMs: Long) =
+        dao.recordListened(bookId, chapterIndex, positionMs.coerceAtLeast(0L))
+
+    suspend fun markCompleted(bookId: String, chapterIndex: Int) =
+        dao.markCompleted(bookId, chapterIndex)
+
+    suspend fun setCompleted(bookId: String, chapterIndex: Int, completed: Boolean) =
+        dao.setCompleted(bookId, chapterIndex, completed)
+
+    suspend fun completeBefore(bookId: String, chapterIndex: Int) =
+        dao.completeBefore(bookId, chapterIndex)
+
     /** Renames a series and, optionally, its author line. */
     suspend fun rename(bookId: String, title: String, author: String?) {
         val cleanTitle = title.trim()
@@ -116,7 +128,19 @@ class LibraryRepository(private val context: Context) {
         } else {
             imported.book
         }
-        dao.replaceBook(book, imported.chapters)
+        // Keep what the listener has heard. Matched by file, so a reordered folder still carries
+        // its marks to the right chapters.
+        val heard = if (existing != null) {
+            dao.getChapters(existing.id).associateBy { it.uri }
+        } else {
+            emptyMap()
+        }
+        val chapters = imported.chapters.map { chapter ->
+            heard[chapter.uri]
+                ?.let { chapter.copy(listenedMs = it.listenedMs, completed = it.completed) }
+                ?: chapter
+        }
+        dao.replaceBook(book, chapters)
         return book
     }
 

@@ -88,8 +88,22 @@ data class Chapter(
     val uri: String,
     val durationMs: Long,
     /** Milliseconds of the book that come before this chapter. Prefix sum, fixed at import. */
-    val startOffsetMs: Long = 0L
-)
+    val startOffsetMs: Long = 0L,
+    /**
+     * Furthest point reached by the playback heartbeat. Seeks never write it, so jumping past a
+     * chapter leaves it reading as unheard instead of finished.
+     */
+    @ColumnInfo(defaultValue = "0") val listenedMs: Long = 0L,
+    /** Set only when the chapter plays through to its end, or when the listener marks it. */
+    @ColumnInfo(defaultValue = "0") val completed: Boolean = false
+) {
+    val listenedFraction: Float
+        get() = if (durationMs > 0L) {
+            (listenedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+}
 
 /** A book together with its chapters — what the player needs to build a queue. */
 data class BookWithChapters(

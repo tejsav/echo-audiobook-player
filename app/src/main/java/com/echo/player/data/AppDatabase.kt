@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Book::class, Chapter::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -48,6 +48,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds listening history. Only what is actually known carries over: how far into its
+         * current chapter each book is. Earlier chapters are left unmarked rather than guessed as
+         * finished, because some of them may have been skipped; the track list offers a one-tap way
+         * to mark them.
+         */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chapters ADD COLUMN listenedMs INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chapters ADD COLUMN completed INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    """
+                    UPDATE chapters SET listenedMs = IFNULL((
+                        SELECT currentPositionMs FROM books WHERE books.id = chapters.bookId
+                    ), 0)
+                    WHERE chapter_index = (
+                        SELECT currentChapterIndex FROM books WHERE books.id = chapters.bookId
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -57,7 +80,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "echo.db"
             )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 .also { instance = it }
         }

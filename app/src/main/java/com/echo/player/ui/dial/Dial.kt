@@ -86,6 +86,7 @@ fun Dial(
     onSkipBack: () -> Unit,
     onSkipForward: () -> Unit,
     onMore: () -> Unit,
+    onTracks: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(
@@ -197,7 +198,17 @@ fun Dial(
                 color = if (scrubArmed) Paper.Accent else Paper.InkFaint,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                // The track read-out is also the way into the track list. Padding is applied either
+                // way so arming the ring does not shift the layout.
+                modifier = if (interactive && !scrubArmed) {
+                    Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onTracks)
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                } else {
+                    Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                }
             )
 
             if (interactive) {

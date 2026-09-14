@@ -3,6 +3,7 @@ package com.echo.player.ui.deck
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +37,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -48,6 +52,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
@@ -58,6 +65,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.echo.player.data.Book
 import com.echo.player.data.Chapter
+import com.echo.player.playback.MediaIds
 import com.echo.player.playback.PlaybackUiState
 import com.echo.player.playback.SleepMode
 import com.echo.player.ui.dial.Dial
@@ -90,10 +98,13 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
     val sleepMode by viewModel.sleepMode.collectAsStateWithLifecycle()
     val sleepRemaining by viewModel.sleepRemainingMs.collectAsStateWithLifecycle()
     val justImported by viewModel.justImported.collectAsStateWithLifecycle()
+    val stats by viewModel.stats.collectAsStateWithLifecycle()
+    val lastJump by viewModel.lastJump.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showAddSheet by remember { mutableStateOf(false) }
     var showMoreSheet by remember { mutableStateOf(false) }
+    var showTracksSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // Live scrub position, held here so the ring follows the finger without a round trip.
@@ -116,6 +127,19 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
         if (text != null) {
             snackbarHostState.showSnackbar(text)
             viewModel.consumeMessage()
+        }
+    }
+
+    // Any chapter jump made in the app can be undone, so a stray tap never costs you your place.
+    LaunchedEffect(lastJump) {
+        val jump = lastJump
+        if (jump != null) {
+            val result = snackbarHostState.showSnackbar(
+                message = "Moved from " + jump.label,
+                actionLabel = "Go back",
+                duration = SnackbarDuration.Long
+            )
+            if (result == SnackbarResult.ActionPerformed) viewModel.undoJump()
         }
     }
 
@@ -220,11 +244,31 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                             onSkipBack = { viewModel.skipBack(book) },
                             onSkipForward = { viewModel.skipForward(book) },
                             onMore = { showMoreSheet = true },
+                            onTracks = { showTracksSheet = true },
                             modifier = Modifier.fillMaxWidth(0.95f)
                         )
                     }
                 }
             }
+
+            // Real numbers for what is playing, or nothing at all. The line keeps its height either
+            // way so the disc does not jump when they arrive.
+            val shownStats = stats?.takeIf { now ->
+                currentBook != null &&
+                    playback.bookId == currentBook.id &&
+                    now.mediaId == MediaIds.create(currentBook.id, playback.chapterIndex)
+            }
+            Text(
+                text = shownStats?.label().orEmpty(),
+                style = EchoType.LabelTiny,
+                color = Paper.InkFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 6.dp)
+            )
 
             val playingThis = currentBook != null &&
                 playback.bookId == currentBook.id &&
@@ -262,12 +306,12 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                 .padding(bottom = 140.dp)
         ) { data ->
             Snackbar(
+                snackbarData = data,
+                shape = RoundedCornerShape(8.dp),
                 containerColor = Paper.Ink,
                 contentColor = Paper.Bg,
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text(data.visuals.message, style = EchoType.Label)
-            }
+                actionColor = Paper.Accent
+            )
         }
 
         if (importState.running) {
@@ -302,8 +346,7 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
         ) {
             SeriesSheet(
                 book = sheetBook,
-                chapters = chapters,
-                playingIndex = if (playback.bookId == sheetBook.id) playback.chapterIndex else -1,
+                trackSummary = trackSummary(chapters, currentIndexOf(sheetBook, playback)),
                 speed = if (playback.bookId == sheetBook.id) {
                     playback.speed
                 } else {
@@ -311,9 +354,9 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                 },
                 sleepMode = sleepMode,
                 sleepRemainingMs = sleepRemaining,
-                onSelectChapter = { index ->
-                    viewModel.playChapter(sheetBook, index)
+                onOpenTracks = {
                     showMoreSheet = false
+                    showTracksSheet = true
                 },
                 onSpeed = { viewModel.setSpeed(sheetBook, it) },
                 onSleepMinutes = viewModel::startSleep,
@@ -325,6 +368,30 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                 onDelete = {
                     viewModel.delete(sheetBook)
                     showMoreSheet = false
+                }
+            )
+        }
+    }
+
+    if (showTracksSheet && sheetBook != null) {
+        ModalBottomSheet(
+            onDismissRequest = { showTracksSheet = false },
+            containerColor = Paper.Disc
+        ) {
+            TracksSheet(
+                chapters = chapters,
+                currentIndex = currentIndexOf(sheetBook, playback),
+                isPlaying = playback.bookId == sheetBook.id && playback.isPlaying,
+                jumpBack = lastJump?.takeIf { it.bookId == sheetBook.id },
+                onPlay = { index ->
+                    viewModel.playChapter(sheetBook, index)
+                    showTracksSheet = false
+                },
+                onToggleCompleted = { index, done -> viewModel.setCompleted(sheetBook, index, done) },
+                onCompleteBefore = { index -> viewModel.completeBefore(sheetBook, index) },
+                onJumpBack = {
+                    viewModel.undoJump()
+                    showTracksSheet = false
                 }
             )
         }
@@ -544,6 +611,18 @@ private fun displayStyleFor(title: String): TextStyle {
     return EchoType.Display.copy(fontSize = size, lineHeight = size * 1.04f)
 }
 
+/** The chapter you are in: the live one when a series is loaded, otherwise where you left it. */
+private fun currentIndexOf(book: Book, playback: PlaybackUiState): Int =
+    if (playback.bookId == book.id && playback.hasItem) {
+        playback.chapterIndex
+    } else {
+        book.currentChapterIndex
+    }
+
+private fun trackSummary(chapters: List<Chapter>, currentIndex: Int): String =
+    (currentIndex + 1).toString() + " of " + chapters.size + "  ·  " +
+        chapters.count { it.completed } + " done"
+
 private fun headerSubtitle(book: Book?, count: Int): String = when {
     count == 0 -> "NO SERIES YET"
     book == null -> count.toString() + " SERIES"
@@ -600,12 +679,11 @@ private fun dialContent(
 @Composable
 private fun SeriesSheet(
     book: Book,
-    chapters: List<Chapter>,
-    playingIndex: Int,
+    trackSummary: String,
     speed: Float,
     sleepMode: SleepMode,
     sleepRemainingMs: Long,
-    onSelectChapter: (Int) -> Unit,
+    onOpenTracks: () -> Unit,
     onSpeed: (Float) -> Unit,
     onSleepMinutes: (Int) -> Unit,
     onSleepEndOfChapter: () -> Unit,
@@ -636,6 +714,11 @@ private fun SeriesSheet(
                 style = EchoType.LabelTiny,
                 color = Paper.InkFaint
             )
+            Spacer(Modifier.height(22.dp))
+        }
+
+        item {
+            SheetRow(title = "Tracks", note = trackSummary, onClick = onOpenTracks)
             Spacer(Modifier.height(22.dp))
         }
 
@@ -733,51 +816,6 @@ private fun SeriesSheet(
                 onClick = { onRename(title, author) },
                 selected = true
             )
-            Spacer(Modifier.height(22.dp))
-            Text("TRACKS", style = EchoType.Label, color = Paper.InkSoft)
-            Spacer(Modifier.height(10.dp))
-        }
-
-        itemsIndexed(chapters) { index, chapter ->
-            val selected = index == playingIndex
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (selected) Paper.Bg else Paper.Disc)
-                    .clickable { onSelectChapter(index) }
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(if (selected) Paper.Accent else Paper.TickOff)
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = (index + 1).toString().padStart(2, '0'),
-                    style = EchoType.Mono,
-                    color = Paper.InkFaint
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = chapter.title,
-                    style = EchoType.TitleSmall,
-                    color = Paper.Ink,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = formatClock(chapter.durationMs),
-                    style = EchoType.Mono,
-                    color = Paper.InkSoft
-                )
-            }
-            Spacer(Modifier.height(4.dp))
         }
 
         item {
@@ -786,6 +824,190 @@ private fun SeriesSheet(
                 text = if (confirmDelete) "Tap again to remove" else "Remove series",
                 danger = true,
                 onClick = { if (confirmDelete) onDelete() else confirmDelete = true }
+            )
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * Every chapter, with what has actually been heard. Opens on the chapter you are in — even when
+ * nothing is loaded — and a tap only arms a row: playing it is a second, deliberate tap, so
+ * scrolling a long list can never throw you into a different chapter.
+ */
+@Composable
+private fun TracksSheet(
+    chapters: List<Chapter>,
+    currentIndex: Int,
+    isPlaying: Boolean,
+    jumpBack: Jump?,
+    onPlay: (Int) -> Unit,
+    onToggleCompleted: (Int, Boolean) -> Unit,
+    onCompleteBefore: (Int) -> Unit,
+    onJumpBack: () -> Unit
+) {
+    val listState = rememberLazyListState()
+    var armedIndex by remember { mutableStateOf<Int?>(null) }
+    val unmarkedBefore = chapters.take(currentIndex.coerceAtLeast(0)).count { !it.completed }
+
+    // Land on the current chapter with a few rows above it. Keyed on the list arriving, not on the
+    // index, so a chapter change during playback does not yank the list while you are reading it.
+    LaunchedEffect(chapters.isNotEmpty()) {
+        if (chapters.isNotEmpty()) {
+            listState.scrollToItem((currentIndex - 2).coerceAtLeast(0))
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp)
+    ) {
+        item {
+            Column(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 12.dp)) {
+                Text("TRACKS", style = EchoType.Label, color = Paper.InkSoft)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = trackSummary(chapters, currentIndex).uppercase(),
+                    style = EchoType.LabelTiny,
+                    color = Paper.InkFaint
+                )
+                if (jumpBack != null) {
+                    Spacer(Modifier.height(14.dp))
+                    SheetRow(
+                        title = "Go back to " + jumpBack.label,
+                        note = "Where you were before the last chapter change",
+                        onClick = onJumpBack
+                    )
+                }
+                if (unmarkedBefore > 0) {
+                    Spacer(Modifier.height(12.dp))
+                    PillButton(
+                        text = if (currentIndex == 1) "Mark 1 as done" else "Mark 1–$currentIndex as done",
+                        onClick = { onCompleteBefore(currentIndex) }
+                    )
+                }
+            }
+        }
+
+        itemsIndexed(chapters, key = { _, chapter -> chapter.index }) { index, chapter ->
+            TrackRow(
+                chapter = chapter,
+                number = index + 1,
+                isCurrent = index == currentIndex,
+                isPlaying = isPlaying && index == currentIndex,
+                armed = armedIndex == index,
+                onArm = {
+                    armedIndex = if (armedIndex == index || index == currentIndex) null else index
+                },
+                onPlay = { onPlay(index) },
+                onToggleCompleted = { onToggleCompleted(index, !chapter.completed) }
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
+
+@Composable
+private fun TrackRow(
+    chapter: Chapter,
+    number: Int,
+    isCurrent: Boolean,
+    isPlaying: Boolean,
+    armed: Boolean,
+    onArm: () -> Unit,
+    onPlay: () -> Unit,
+    onToggleCompleted: () -> Unit
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isCurrent || armed) Paper.Bg else Paper.Disc)
+            .clickable(onClick = onArm)
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 2.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Its own large target, so fixing a mark never arms or plays the row.
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggleCompleted),
+                contentAlignment = Alignment.Center
+            ) {
+                ListenMark(chapter = chapter, isCurrent = isCurrent)
+            }
+            Text(
+                text = number.toString().padStart(2, '0'),
+                style = EchoType.Mono,
+                color = Paper.InkFaint
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = chapter.title,
+                    style = EchoType.TitleSmall,
+                    // Finished chapters recede so the ones still ahead are easy to find.
+                    color = if (chapter.completed && !isCurrent) Paper.InkSoft else Paper.Ink,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val status = when {
+                    isCurrent && isPlaying -> "PLAYING"
+                    isCurrent -> "YOU ARE HERE"
+                    !chapter.completed && chapter.listenedMs > 0L ->
+                        (chapter.listenedFraction * 100).toInt().toString() + "% HEARD"
+                    else -> null
+                }
+                if (status != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = status,
+                        style = EchoType.LabelTiny,
+                        color = if (isCurrent) Paper.Accent else Paper.InkFaint
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = formatClock(chapter.durationMs),
+                style = EchoType.Mono,
+                color = Paper.InkSoft
+            )
+        }
+        if (armed) {
+            Row(Modifier.padding(start = 46.dp, end = 12.dp, bottom = 10.dp)) {
+                PillButton(text = "Play from start", selected = true, onClick = onPlay)
+            }
+        }
+    }
+}
+
+/** Empty ring: not heard. Filling wedge: partly heard. Solid: finished. */
+@Composable
+private fun ListenMark(chapter: Chapter, isCurrent: Boolean) {
+    // Palette entries are composable getters, so they must be read before the draw scope.
+    val track = Paper.TickOff
+    val fill = if (isCurrent) Paper.Accent else Paper.Ink
+    val heard = if (chapter.completed) 1f else chapter.listenedFraction
+
+    Canvas(Modifier.size(14.dp)) {
+        val stroke = 1.5.dp.toPx()
+        val inset = stroke / 2f
+        drawCircle(color = track, radius = size.minDimension / 2f - inset, style = Stroke(width = stroke))
+        when {
+            heard >= 1f -> drawCircle(color = fill, radius = size.minDimension / 2f)
+            heard > 0f -> drawArc(
+                color = fill,
+                startAngle = -90f,
+                sweepAngle = 360f * heard,
+                useCenter = true,
+                topLeft = Offset(inset, inset),
+                size = Size(size.width - stroke, size.height - stroke)
             )
         }
     }

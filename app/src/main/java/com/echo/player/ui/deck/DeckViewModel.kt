@@ -8,10 +8,13 @@ import com.echo.player.data.Book
 import com.echo.player.data.BookImporter
 import com.echo.player.data.Chapter
 import com.echo.player.echoApp
+import com.echo.player.playback.AudioStats
+import com.echo.player.playback.NowPlaying
 import com.echo.player.playback.PlaybackService
 import com.echo.player.playback.PlaybackUiState
 import com.echo.player.playback.SleepMode
 import com.echo.player.playback.SleepTimer
+import com.echo.player.util.formatClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -26,6 +29,9 @@ import kotlinx.coroutines.launch
 
 private typealias ProgressReporter = suspend (BookImporter.Progress) -> Unit
 
+/** Restarting the chapter you are already near the top of loses nothing worth undoing. */
+private const val UNDO_WORTH_MS = 10_000L
+
 data class ImportUiState(
     val running: Boolean = false,
     val done: Int = 0,
@@ -34,6 +40,14 @@ data class ImportUiState(
 ) {
     val fraction: Float get() = if (total > 0) done.toFloat() / total.toFloat() else 0f
 }
+
+/** Where the listener was before a chapter jump made in the app, so the jump can be undone. */
+data class Jump(
+    val bookId: String,
+    val chapterIndex: Int,
+    val positionMs: Long,
+    val label: String
+)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class DeckViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,6 +62,12 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
 
     val sleepMode: StateFlow<SleepMode> = SleepTimer.mode
     val sleepRemainingMs: StateFlow<Long> = SleepTimer.remainingMs
+
+    /** What is being decoded right now, read from the file rather than assumed. */
+    val stats: StateFlow<AudioStats?> = NowPlaying.stats
+
+    private val _lastJump = MutableStateFlow<Jump?>(null)
+    val lastJump: StateFlow<Jump?> = _lastJump.asStateFlow()
 
     /** The disc currently centred in the carousel. */
     private val _selectedId = MutableStateFlow<String?>(null)
@@ -154,6 +174,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playChapter(book: Book, index: Int) {
+        rememberJumpFrom(book, toIndex = index)
         if (isLoaded(book)) {
             connection.playChapter(index)
             return
@@ -169,6 +190,50 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
                 startPositionMs = 0L
             )
         }
+    }
+
+    private fun rememberJumpFrom(book: Book, toIndex: Int) {
+        val live = isLoaded(book)
+        val fromIndex = if (live) playback.value.chapterIndex else book.currentChapterIndex
+        val fromPosition = if (live) playback.value.positionMs else book.currentPositionMs
+        if (fromIndex == toIndex && fromPosition < UNDO_WORTH_MS) return
+        _lastJump.value = Jump(
+            bookId = book.id,
+            chapterIndex = fromIndex,
+            positionMs = fromPosition,
+            label = "Ch " + (fromIndex + 1) + " · " + formatClock(fromPosition)
+        )
+    }
+
+    /** Puts the listener back exactly where they were before the last chapter jump. */
+    fun undoJump() {
+        val jump = _lastJump.value ?: return
+        _lastJump.value = null
+        val book = books.value.firstOrNull { it.id == jump.bookId } ?: return
+        if (isLoaded(book)) {
+            connection.seekToChapter(jump.chapterIndex, jump.positionMs)
+            return
+        }
+        viewModelScope.launch {
+            val loaded = repository.bookWithChapters(book.id) ?: return@launch
+            exactStart = null
+            connection.openBook(
+                book = loaded.book,
+                chapters = loaded.chapters,
+                autoPlay = true,
+                startIndex = jump.chapterIndex,
+                startPositionMs = jump.positionMs
+            )
+        }
+    }
+
+    /** Correcting the record by hand: marking a chapter heard, or clearing a wrong mark. */
+    fun setCompleted(book: Book, index: Int, completed: Boolean) {
+        viewModelScope.launch { repository.setCompleted(book.id, index, completed) }
+    }
+
+    fun completeBefore(book: Book, index: Int) {
+        viewModelScope.launch { repository.completeBefore(book.id, index) }
     }
 
     fun setSpeed(book: Book, speed: Float) {

@@ -146,6 +146,10 @@ class PlayerConnection(private val context: Context) {
 
     fun playChapter(index: Int) = withController { it.seekTo(index, 0L) }
 
+    /** Puts the listener back exactly where they were before a chapter jump. */
+    fun seekToChapter(index: Int, positionMs: Long) =
+        withController { it.seekTo(index, positionMs.coerceAtLeast(0L)) }
+
     fun togglePlayPause() = withController { controller ->
         if (controller.isPlaying) controller.pause() else controller.play()
     }
