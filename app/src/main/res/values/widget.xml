@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="widget_bg">#FFFFFF</color>
+    <color name="widget_ink">#0A0A0B</color>
+    <color name="widget_ink_soft">#6B6B70</color>
+    <color name="widget_accent">#EF3B12</color>
+    <color name="widget_disc">#0A0A0B</color>
+    <string name="widget_description">Carry on with the last series you were listening to</string>
+    <string name="widget_empty">Nothing played yet</string>
+</resources>

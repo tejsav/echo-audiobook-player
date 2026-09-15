@@ -48,10 +48,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -73,13 +75,17 @@ import com.echo.player.ui.dial.Dial
 import com.echo.player.ui.dial.DialContent
 import com.echo.player.ui.dial.PlayButton
 import com.echo.player.ui.dial.paperGrid
+import com.echo.player.ui.stats.StatsScreen
 import com.echo.player.ui.theme.EchoType
 import com.echo.player.ui.theme.Paper
 import com.echo.player.util.formatClock
 import com.echo.player.util.formatDurationShort
 import com.echo.player.util.formatSpeed
+import com.echo.player.util.sharedPrefix
+import com.echo.player.util.tidyChapterTitle
 import kotlinx.coroutines.delay
 import kotlin.math.abs
+import java.time.LocalDate
 import kotlin.math.absoluteValue
 
 private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
@@ -101,11 +107,19 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
     val justImported by viewModel.justImported.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val lastJump by viewModel.lastJump.collectAsStateWithLifecycle()
+    val bookmarks by viewModel.selectedBookmarks.collectAsStateWithLifecycle()
+    val levelVolume by viewModel.levelVolume.collectAsStateWithLifecycle()
+    val unlinked by viewModel.unlinked.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showAddSheet by remember { mutableStateOf(false) }
     var showMoreSheet by remember { mutableStateOf(false) }
     var showTracksSheet by remember { mutableStateOf(false) }
+    var showBookmarksSheet by remember { mutableStateOf(false) }
+    var showStats by rememberSaveable { mutableStateOf(false) }
+
+    // The backup series waiting on the folder picker, by id, so it survives the trip to the picker.
+    var relinkId by rememberSaveable { mutableStateOf<String?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // Live scrub position, held here so the ring follows the finger without a round trip.
@@ -122,6 +136,27 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris -> if (uris.isNotEmpty()) viewModel.importFiles(uris) }
+
+    val backupWriter = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri -> if (uri != null) viewModel.writeBackup(uri) }
+
+    val backupReader = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) viewModel.restoreBackup(uri) }
+
+    val relinkPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val target = unlinked.firstOrNull { it.book.id == relinkId }
+        relinkId = null
+        if (uri != null && target != null) viewModel.relink(target, uri)
+    }
+
+    // A restore that still needs folders brings the list of them straight up.
+    LaunchedEffect(unlinked.size) {
+        if (unlinked.isNotEmpty()) showAddSheet = true
+    }
 
     LaunchedEffect(message) {
         val text = message
@@ -189,7 +224,8 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             Header(
                 title = currentBook?.title ?: "No series",
                 subtitle = headerSubtitle(currentBook, books.size),
-                onAdd = { showAddSheet = true }
+                onAdd = { showAddSheet = true },
+                onStats = { showStats = true }
             )
 
             if (books.isEmpty()) {
@@ -315,6 +351,11 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             )
         }
 
+        if (showStats) {
+            val listening by viewModel.listening.collectAsStateWithLifecycle()
+            StatsScreen(stats = listening, onClose = { showStats = false })
+        }
+
         if (importState.running) {
             ImportOverlay(state = importState, onCancel = viewModel::cancelImport)
         }
@@ -326,7 +367,9 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             sheetState = sheetState,
             containerColor = Paper.Disc
         ) {
-            AddSheet(
+            LibrarySheet(
+                levelVolume = levelVolume,
+                unlinked = unlinked,
                 onPickFolder = {
                     showAddSheet = false
                     folderPicker.launch(null)
@@ -334,7 +377,22 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                 onPickFiles = {
                     showAddSheet = false
                     filePicker.launch(arrayOf("audio/*"))
-                }
+                },
+                onLevelVolume = viewModel::setLevelVolume,
+                onBackUp = {
+                    showAddSheet = false
+                    backupWriter.launch("echo-backup-" + LocalDate.now() + ".json")
+                },
+                onRestore = {
+                    showAddSheet = false
+                    backupReader.launch(arrayOf("application/json", "application/octet-stream", "text/plain"))
+                },
+                onRelink = { saved ->
+                    showAddSheet = false
+                    relinkId = saved.book.id
+                    relinkPicker.launch(null)
+                },
+                onSkipRelink = viewModel::skipRelink
             )
         }
     }
@@ -348,6 +406,8 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             SeriesSheet(
                 book = sheetBook,
                 trackSummary = trackSummary(chapters, currentIndexOf(sheetBook, playback)),
+                bookmarkCount = bookmarks.size,
+                tidyExample = tidyExample(sheetBook, chapters, currentIndexOf(sheetBook, playback)),
                 speed = if (playback.bookId == sheetBook.id) {
                     playback.speed
                 } else {
@@ -359,6 +419,11 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                     showMoreSheet = false
                     showTracksSheet = true
                 },
+                onOpenBookmarks = {
+                    showMoreSheet = false
+                    showBookmarksSheet = true
+                },
+                onTidyNames = { viewModel.setTidyNames(sheetBook, it) },
                 onSpeed = { viewModel.setSpeed(sheetBook, it) },
                 onSleepMinutes = viewModel::startSleep,
                 onSleepEndOfChapter = viewModel::sleepAtEndOfChapter,
@@ -381,6 +446,7 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
         ) {
             TracksSheet(
                 chapters = chapters,
+                displayTitle = sheetBook::displayTitle,
                 currentIndex = currentIndexOf(sheetBook, playback),
                 isPlaying = playback.bookId == sheetBook.id && playback.isPlaying,
                 jumpBack = lastJump?.takeIf { it.bookId == sheetBook.id },
@@ -397,12 +463,36 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             )
         }
     }
+
+    if (showBookmarksSheet && sheetBook != null) {
+        ModalBottomSheet(
+            onDismissRequest = { showBookmarksSheet = false },
+            containerColor = Paper.Disc
+        ) {
+            val live = playback.bookId == sheetBook.id && playback.hasItem
+            val hereIndex = currentIndexOf(sheetBook, playback)
+            val herePosition = if (live) playback.positionMs else sheetBook.currentPositionMs
+            BookmarksSheet(
+                book = sheetBook,
+                bookmarks = bookmarks,
+                chapters = chapters,
+                here = "Ch " + (hereIndex + 1) + " · " + formatClock(herePosition),
+                onAdd = { viewModel.addBookmark(sheetBook) },
+                onPlay = { index, positionMs ->
+                    viewModel.playChapter(sheetBook, index, positionMs)
+                    showBookmarksSheet = false
+                },
+                onSaveNote = viewModel::setBookmarkNote,
+                onDelete = viewModel::deleteBookmark
+            )
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------------------------
 
 @Composable
-private fun Header(title: String, subtitle: String, onAdd: () -> Unit) {
+private fun Header(title: String, subtitle: String, onAdd: () -> Unit, onStats: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -427,6 +517,30 @@ private fun Header(title: String, subtitle: String, onAdd: () -> Unit) {
             )
         }
         Spacer(Modifier.width(12.dp))
+        Box(
+            Modifier
+                .padding(top = 8.dp)
+                .size(44.dp)
+                .clip(CircleShape)
+                .border(1.dp, Paper.Hair, CircleShape)
+                .clickable(onClick = onStats),
+            contentAlignment = Alignment.Center
+        ) {
+            // Palette entries are composable getters; read before the draw scope.
+            val ink = Paper.Ink
+            Canvas(Modifier.size(16.dp)) {
+                val bar = size.width / 5f
+                listOf(0.45f, 1f, 0.7f).forEachIndexed { i, height ->
+                    drawRoundRect(
+                        color = ink,
+                        topLeft = Offset(bar * i * 2, size.height * (1f - height)),
+                        size = Size(bar, size.height * height),
+                        cornerRadius = CornerRadius(bar / 2f)
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(8.dp))
         Box(
             Modifier
                 .padding(top = 8.dp)
@@ -532,30 +646,7 @@ private fun ImportOverlay(state: ImportUiState, onCancel: () -> Unit) {
 }
 
 @Composable
-private fun AddSheet(onPickFolder: () -> Unit, onPickFiles: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 24.dp, end = 24.dp, bottom = 36.dp)
-    ) {
-        Text("ADD A SERIES", style = EchoType.Label, color = Paper.InkSoft)
-        Spacer(Modifier.height(16.dp))
-        SheetRow(
-            title = "Choose a folder",
-            note = "Recommended. Every audio file inside becomes a chapter, sorted by name.",
-            onClick = onPickFolder
-        )
-        Spacer(Modifier.height(12.dp))
-        SheetRow(
-            title = "Choose files",
-            note = "Pick individual tracks yourself.",
-            onClick = onPickFiles
-        )
-    }
-}
-
-@Composable
-private fun SheetRow(title: String, note: String, onClick: () -> Unit) {
+internal fun SheetRow(title: String, note: String, onClick: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -571,7 +662,7 @@ private fun SheetRow(title: String, note: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PillButton(
+internal fun PillButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -624,6 +715,13 @@ private fun trackSummary(chapters: List<Chapter>, currentIndex: Int): String =
     (currentIndex + 1).toString() + " of " + chapters.size + "  ·  " +
         chapters.count { it.completed } + " done"
 
+/** A real chapter name before and after tidying, so the choice is made on what it will look like. */
+private fun tidyExample(book: Book, chapters: List<Chapter>, currentIndex: Int): Pair<String, String>? {
+    val raw = chapters.getOrNull(currentIndex)?.title ?: chapters.firstOrNull()?.title ?: return null
+    val prefix = book.namePrefix ?: sharedPrefix(chapters.map { it.title })
+    return raw to tidyChapterTitle(raw, prefix, book.title)
+}
+
 private fun headerSubtitle(book: Book?, count: Int): String = when {
     count == 0 -> "NO SERIES YET"
     book == null -> count.toString() + " SERIES"
@@ -659,7 +757,7 @@ private fun dialContent(
 
     val liveTitle = if (live) playback.chapterTitle else ""
     val title = liveTitle
-        .ifBlank { book.currentChapterTitle.orEmpty() }
+        .ifBlank { book.currentChapterTitle?.let(book::displayTitle).orEmpty() }
         .ifBlank { "Chapter " + (chapterIndex + 1) }
 
     return DialContent(
@@ -681,10 +779,14 @@ private fun dialContent(
 private fun SeriesSheet(
     book: Book,
     trackSummary: String,
+    bookmarkCount: Int,
+    tidyExample: Pair<String, String>?,
     speed: Float,
     sleepMode: SleepMode,
     sleepRemainingMs: Long,
     onOpenTracks: () -> Unit,
+    onOpenBookmarks: () -> Unit,
+    onTidyNames: (Boolean) -> Unit,
     onSpeed: (Float) -> Unit,
     onSleepMinutes: (Int) -> Unit,
     onSleepEndOfChapter: () -> Unit,
@@ -720,6 +822,44 @@ private fun SeriesSheet(
 
         item {
             SheetRow(title = "Tracks", note = trackSummary, onClick = onOpenTracks)
+            Spacer(Modifier.height(12.dp))
+            SheetRow(
+                title = "Bookmarks",
+                note = if (bookmarkCount == 0) {
+                    "None yet · mark a moment and add a note"
+                } else {
+                    bookmarkCount.toString() + " saved"
+                },
+                onClick = onOpenBookmarks
+            )
+            Spacer(Modifier.height(22.dp))
+        }
+
+        item {
+            Text("CHAPTER NAMES", style = EchoType.Label, color = Paper.InkSoft)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton(
+                    text = "As in files",
+                    selected = !book.tidyNames,
+                    onClick = { onTidyNames(false) }
+                )
+                PillButton(text = "Tidy", selected = book.tidyNames, onClick = { onTidyNames(true) })
+            }
+            if (tidyExample != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = if (tidyExample.first == tidyExample.second) {
+                        "Nothing to tidy in these names"
+                    } else {
+                        tidyExample.first + "  →  " + tidyExample.second
+                    },
+                    style = EchoType.Body,
+                    color = Paper.InkFaint,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Spacer(Modifier.height(22.dp))
         }
 
@@ -840,6 +980,7 @@ private fun SeriesSheet(
 @Composable
 private fun TracksSheet(
     chapters: List<Chapter>,
+    displayTitle: (String) -> String,
     currentIndex: Int,
     isPlaying: Boolean,
     jumpBack: Jump?,
@@ -895,6 +1036,7 @@ private fun TracksSheet(
         itemsIndexed(chapters, key = { _, chapter -> chapter.index }) { index, chapter ->
             TrackRow(
                 chapter = chapter,
+                title = displayTitle(chapter.title),
                 number = index + 1,
                 isCurrent = index == currentIndex,
                 isPlaying = isPlaying && index == currentIndex,
@@ -913,6 +1055,7 @@ private fun TracksSheet(
 @Composable
 private fun TrackRow(
     chapter: Chapter,
+    title: String,
     number: Int,
     isCurrent: Boolean,
     isPlaying: Boolean,
@@ -950,7 +1093,7 @@ private fun TrackRow(
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = chapter.title,
+                    text = title,
                     style = EchoType.TitleSmall,
                     // Finished chapters recede so the ones still ahead are easy to find.
                     color = if (chapter.completed && !isCurrent) Paper.InkSoft else Paper.Ink,

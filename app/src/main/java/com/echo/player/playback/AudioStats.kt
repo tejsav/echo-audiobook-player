@@ -38,6 +38,10 @@ object NowPlaying {
     fun publish(stats: AudioStats?) {
         _stats.value = stats
     }
+
+    /** The series in the player's queue, or null when nothing is loaded. */
+    @Volatile
+    var loadedBookId: String? = null
 }
 
 private val LOSSLESS = setOf("audio/raw", "audio/flac", "audio/alac")

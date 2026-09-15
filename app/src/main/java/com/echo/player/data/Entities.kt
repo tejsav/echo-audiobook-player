@@ -5,6 +5,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.echo.player.util.tidyChapterTitle
 
 /**
  * One audiobook. [currentChapterIndex] + [currentPositionMs] are the resume point and are the
@@ -37,7 +38,11 @@ data class Book(
      * a single row; without this it would have to load each book's chapters just to render.
      */
     val currentChapterTitle: String? = null,
-    val currentChapterDurationMs: Long = 0L
+    val currentChapterDurationMs: Long = 0L,
+    /** Show chapter names without the part every file in the folder shares. Display only. */
+    @ColumnInfo(defaultValue = "0") val tidyNames: Boolean = false,
+    /** The file-name prefix every chapter shares, worked out from the chapters. Null until then. */
+    val namePrefix: String? = null
 ) {
     val progress: Float
         get() = if (totalDurationMs > 0L) {
@@ -60,6 +65,10 @@ data class Book(
         get() = (currentChapterDurationMs - currentPositionMs).coerceAtLeast(0L)
 
     val hasProgress: Boolean get() = lastPlayedAt > 0L
+
+    /** A chapter name as shown on screen. The stored name and the file itself never change. */
+    fun displayTitle(raw: String): String =
+        if (tidyNames) tidyChapterTitle(raw, namePrefix.orEmpty(), title) else raw
 
     val isFinished: Boolean get() = totalDurationMs > 0L && remainingMs < FINISHED_SLACK_MS
 
@@ -95,7 +104,12 @@ data class Chapter(
      */
     @ColumnInfo(defaultValue = "0") val listenedMs: Long = 0L,
     /** Set only when the chapter plays through to its end, or when the listener marks it. */
-    @ColumnInfo(defaultValue = "0") val completed: Boolean = false
+    @ColumnInfo(defaultValue = "0") val completed: Boolean = false,
+    /**
+     * When the chapter played through by itself. Chapters marked by hand leave this empty, so the
+     * weekly count of finished chapters only ever reflects real listening.
+     */
+    val completedAt: Long? = null
 ) {
     val listenedFraction: Float
         get() = if (durationMs > 0L) {
@@ -104,6 +118,42 @@ data class Chapter(
             0f
         }
 }
+
+/**
+ * One stretch of listening. A pause of a couple of minutes or less stays in the same session.
+ *
+ * Deliberately not tied to the books table: removing a series should not erase the time spent with
+ * it from your totals.
+ */
+@Entity(tableName = "listening_sessions", indices = [Index("bookId"), Index("startedAt")])
+data class ListeningSession(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val bookId: String,
+    val startedAt: Long,
+    val endedAt: Long,
+    /** Time actually spent listening. */
+    val wallMs: Long,
+    /** How much of the recording that covered: wall time multiplied by playback speed. */
+    val audioMs: Long
+)
+
+/**
+ * A moment worth coming back to. Tied to the chapter's file, so reordering a folder keeps it.
+ *
+ * No foreign key on purpose: re-importing a folder replaces the book row, and a cascade would
+ * silently delete every bookmark with it. Removing a series deletes its bookmarks by hand.
+ */
+@Entity(tableName = "bookmarks", indices = [Index("bookId")])
+data class Bookmark(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val bookId: String,
+    val chapterUri: String,
+    val positionMs: Long,
+    val note: String = "",
+    val createdAt: Long
+)
+
+data class DoneCount(val bookId: String, val done: Int)
 
 /** A book together with its chapters — what the player needs to build a queue. */
 data class BookWithChapters(

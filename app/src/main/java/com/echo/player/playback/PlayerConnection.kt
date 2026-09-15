@@ -12,6 +12,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.echo.player.data.Book
 import com.echo.player.data.Chapter
+import com.echo.player.util.rewindAfter
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +26,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
-/** How far to step back when picking a series or a chapter up again. */
+/** How far back "Resume at" starts a chapter left part-way, in the track list. */
 const val RESUME_REWIND_MS = 15_000L
 
 data class PlaybackUiState(
@@ -97,9 +98,9 @@ class PlayerConnection(private val context: Context) {
      * Loads [book] into the player, starting from its saved resume point unless an explicit
      * position is given. If the book is already loaded the queue is left alone.
      *
-     * Picking a series back up rewinds by [RESUME_REWIND_MS] so the last few seconds are heard
-     * again — after a day away you need a moment to find the thread. An explicit position (a
-     * chapter tap, a scrub) is honoured exactly.
+     * Picking a series back up rewinds by how long you have been away ([rewindAfter]), so you hear
+     * enough again to find the thread. An explicit position (a chapter tap, a scrub) is honoured
+     * exactly.
      */
     fun openBook(
         book: Book,
@@ -118,7 +119,8 @@ class PlayerConnection(private val context: Context) {
                 val resuming = startPositionMs == null
                 val rawPosition = startPositionMs ?: book.currentPositionMs
                 val position = if (resuming) {
-                    (rawPosition - RESUME_REWIND_MS).coerceAtLeast(0L)
+                    val awayMs = System.currentTimeMillis() - book.lastPlayedAt
+                    (rawPosition - rewindAfter(awayMs)).coerceAtLeast(0L)
                 } else {
                     rawPosition.coerceAtLeast(0L)
                 }
@@ -233,27 +235,28 @@ class PlayerConnection(private val context: Context) {
     private fun Long.readableDuration(): Long =
         if (this == C.TIME_UNSET || this < 0L) 0L else this
 
-    private fun Chapter.toMediaItem(book: Book): MediaItem {
-        val artwork = book.coverPath?.let { Uri.fromFile(File(it)) }
-        return MediaItem.Builder()
-            .setMediaId(MediaIds.create(bookId, index))
-            .setUri(Uri.parse(uri))
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(book.author ?: book.title)
-                    .setAlbumTitle(book.title)
-                    .setArtworkUri(artwork)
-                    .setIsBrowsable(false)
-                    .setIsPlayable(true)
-                    .build()
-            )
-            .build()
-    }
-
     private companion object {
         const val POSITION_POLL_MS = 500L
         const val RESTART_THRESHOLD_MS = 3_000L
 
     }
+}
+
+/** One chapter as the player sees it. Shared by the app and by the service's own resume. */
+internal fun Chapter.toMediaItem(book: Book): MediaItem {
+    val artwork = book.coverPath?.let { Uri.fromFile(File(it)) }
+    return MediaItem.Builder()
+        .setMediaId(MediaIds.create(bookId, index))
+        .setUri(Uri.parse(uri))
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(book.displayTitle(title))
+                .setArtist(book.author ?: book.title)
+                .setAlbumTitle(book.title)
+                .setArtworkUri(artwork)
+                .setIsBrowsable(false)
+                .setIsPlayable(true)
+                .build()
+        )
+        .build()
 }

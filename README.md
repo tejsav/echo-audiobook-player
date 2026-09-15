@@ -22,30 +22,58 @@ when you come back.
 
 ## Features
 
+**Playback**
+
 - **Folders become series.** Every audio file inside becomes a chapter, sorted by file name and
   numerically aware, so `Chapter 2` sorts before `Chapter 10`. Nested folders are included.
-- **Resumes 15 seconds back.** The disc shows exactly where you stopped; pressing play starts 15
-  seconds earlier so you catch the thread again. Deliberate moves — tapping a chapter, scrubbing
-  the ring — are honoured exactly, with no rewind.
+- **New files are picked up.** Add files to a series folder and they appear the next time you open
+  the app. It only ever adds: if files seem to be missing, the series is left untouched.
+- **Rewinds by how long you were away.** 5 seconds after a short pause, 15 seconds after up to two
+  hours, 30 seconds after up to two days, 45 seconds after longer. Deliberate moves — tapping a
+  chapter, scrubbing the ring, a bookmark — are honoured exactly.
 - **Survives everything.** Position is saved on a 5 second heartbeat while playing, and again on
-  every pause, seek, chapter change, app swipe-away and service teardown. Verified against process
-  kill, device reboot, and reboot with networking disabled.
+  every pause, seek, chapter change, app swipe-away and service teardown.
 - **Background playback** via a `MediaSessionService`, with notification and lock-screen controls,
   audio focus and headphone handling.
-- **Your own cover art.** Pick a picture from the gallery; it becomes the record label on the disc
-  and the artwork on every chapter, including the lock screen.
-- **Name your series** and give it an author or narrator.
+- **Even out volume** (Android 9+): an optional compressor and limiter for talks recorded unevenly.
+- Playback speed 0.75×–2× per series, and a sleep timer (countdown or end-of-chapter).
+
+**Knowing where you are**
+
 - **Knows what you actually heard.** Each chapter shows as unheard, partly heard or finished. A
   chapter is only marked finished when it plays to its end, so a skipped one never looks done.
 - **Every chapter remembers where you left it.** Go back to a half-heard chapter and it offers to
-  resume there, 15 seconds back.
+  resume there.
 - **Hard to lose your place by accident.** Track rows need a second tap to play, every chapter jump
   offers "Go back", and headset, Bluetooth and notification controls only play and pause — they
   cannot skip chapters.
+- **Bookmarks with notes.** Save a moment, write why, and jump back to it later.
+
+**Your library**
+
+- **Your own cover art and names.** Pick a picture from the gallery; it becomes the record label on
+  the disc and the artwork on every chapter, including the lock screen.
+- **Tidy chapter names**, per series and display only. `OSHO-Maha_Geeta_20` can read as
+  `Maha Geeta · 20`; the files and stored names never change.
+- **Backup and restore.** One file holds places, done marks, names, covers, bookmarks and the
+  listening log. On a new phone, each series asks for its folder and everything is put back on it.
+- **Home-screen widget.** The last series and one button to carry on, without opening the app.
 - **Real stream details** under the disc — codec, sample rate, bitrate, channels — read from the
   file. Bit depth appears only for lossless audio; nothing is guessed.
-- Track list, playback speed 0.75×–2× per series, and a sleep timer (countdown or end-of-chapter).
 - Follows the system light/dark theme.
+
+**Listening stats**
+
+Tap the bar-chart button at the top. Everything comes from a log of real listening; nothing is
+estimated backwards, so the screen shows the date counting began.
+
+- Time listened today, this week, this month and all time
+- The last 30 days as a bar chart, and your current and longest streak (a day counts after 5 minutes)
+- Morning, afternoon, evening and night
+- Sessions: how many, average and longest
+- Chapters that played through to the end, per week
+- Per series: first logged, days listened, time in, chapters done, and a finish date at your pace
+  over the last two weeks
 
 ## The interface
 
@@ -57,11 +85,20 @@ move until you tap it.** A tap arms it and shows the accent handle; it disarms i
 seconds. Losing your place because a thumb brushed the edge is worse than one extra tap.
 
 `−10s` and `+15s` sit either side of the cover. There are no next/previous chapter buttons; the
-track list behind the `•••` does that job. One accent button at the bottom plays and pauses.
+track list behind the `•••` does that job, along with bookmarks, speed, names and the cover. One
+accent button at the bottom plays and pauses. The `+` button adds series and holds the volume
+switch, backup and restore.
 
 ## Install
 
 Download an APK from [Releases](../../releases), or build it yourself.
+
+**Getting updates automatically.** ECHO has no internet access, so it cannot update itself. Install
+[Obtainium](https://github.com/ImranR98/Obtainium) and add this repository's URL; it watches the
+releases and offers each new version with one tap.
+
+Updates install over the existing app only when they are signed with the same key. Make a backup
+before switching between builds from different sources.
 
 ## Build
 
@@ -83,6 +120,12 @@ The APK lands in `app/build/outputs/apk/debug/app-debug.apk`. Install it with:
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Run the unit tests (plain JVM, no device needed):
+
+```bash
+./gradlew testReleaseUnitTest
+```
+
 Create `local.properties` with your SDK location if Gradle cannot find it:
 
 ```properties
@@ -95,44 +138,55 @@ On Windows use `gradlew.bat` in place of `./gradlew`. If Gradle picks the wrong 
 ## How it is put together
 
 Kotlin, Jetpack Compose, Media3/ExoPlayer, Room. No dependency injection framework and no
-navigation library — the app is one screen.
+navigation library.
 
 | Layer | Where | Notes |
 | --- | --- | --- |
-| Playback | `playback/PlaybackService.kt` | `MediaSessionService` + ExoPlayer; the only writer of resume positions |
-| Session bridge | `playback/PlayerConnection.kt` | `MediaController` mirrored into a `StateFlow`; owns the 15s pick-up rewind |
-| Storage | `data/` | Room: `books` + `chapters` |
+| Playback | `playback/PlaybackService.kt` | `MediaSessionService` + ExoPlayer; the only writer of resume positions and the listening log; time-away rewind; resume from outside the app; volume levelling |
+| Session bridge | `playback/PlayerConnection.kt` | `MediaController` mirrored into a `StateFlow` |
+| Storage | `data/` | Room: `books`, `chapters`, `listening_sessions`, `bookmarks`; schemas exported to `app/schemas` |
 | Import | `data/BookImporter.kt` | Storage Access Framework tree walk, tag reading, natural-order sort |
+| Backup | `data/Backup.kt` | Plain JSON; restore matches chapters by file, then by name and order |
 | Covers | `data/CoverStore.kt` | Gallery pictures are copied into app storage and downscaled, never referenced by uri |
+| Stats | `stats/ListeningStats.kt` | Pure functions over the log, unit tested |
 | Dial | `ui/dial/` | The disc, its tick ring and scrub gesture, and the accent button |
-| Screen | `ui/deck/` | The carousel and the series sheet |
+| Screens | `ui/deck/`, `ui/stats/` | The carousel and its sheets; the stats screen |
+| Widget | `widget/ResumeWidget.kt` | `RemoteViews`; its button sends a media key |
 
-Four things worth knowing before changing the playback code:
+Things worth knowing before changing the playback code:
 
 - Media items carry `bookId|chapterIndex` as their media id, so the service can always work out
   what to save without holding separate state that could drift.
 - Loading a queue reports its start position through the same callbacks a real move does.
-  `PlaybackService` suppresses saves for a moment after a playlist change; without that, the 15s
-  rewind would be saved back and walk the book backwards on every open.
+  `PlaybackService` suppresses saves for a moment after a playlist change; without that, the
+  pick-up rewind would be saved back and walk the book backwards on every open.
+- Resuming after a pause is rewound in one place, `onPlayWhenReadyChanged` in the service, so the
+  app, the notification, a headset and the widget all behave the same. Any seek clears it.
 - `books.currentChapterTitle` and `books.currentChapterDurationMs` are denormalised so the carousel
-  can draw any disc from a single row instead of loading every series' chapters. They are kept in
-  step by the same UPDATE that writes the resume point.
+  can draw any disc from a single row. They are kept in step by the same UPDATE that writes the
+  resume point.
+- Bookmarks have no foreign key to books on purpose: re-importing replaces the book row, and a
+  cascade would delete them.
 - The scrub ring only claims touches in the outer band, and only once armed, so a vertical swipe
   through the middle of the disc still pages to the next series.
 
 ## Known limits
 
+- Listening stats start from the version that added the log (1.2). Earlier listening was never
+  recorded and is not reconstructed.
+- A chapter's heard mark is a high-water mark, so playing on after a forward scrub counts the
+  skipped stretch as heard.
+- Volume levelling uses fixed settings and needs Android 9 or newer.
 - Covers are stored at up to 1024px on the long edge, re-encoded as JPEG.
 - Importing a large series reads tags from every file, which takes a moment. There is a progress
   panel and it can be cancelled.
-- Re-importing a folder refreshes its chapters but keeps your position, name and cover.
 - Screenshots above show the light theme.
 
 ## Contributing
 
-Issues and pull requests are welcome. There is no test suite yet; if you change playback or the
-resume logic, please describe how you verified it — process kill and reboot are the cases that
-matter.
+Issues and pull requests are welcome. Pure logic has JVM unit tests under `app/src/test`. If you
+change playback or the resume logic, please describe how you verified it on a device — process kill
+and reboot are the cases that matter.
 
 ## Licence
 

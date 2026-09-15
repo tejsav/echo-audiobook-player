@@ -72,6 +72,18 @@ object BookImporter {
         )
     }
 
+    /**
+     * The audio files a folder holds right now, without reading any tags. Null when the folder
+     * cannot be opened at all.
+     */
+    suspend fun scanTree(context: Context, treeUri: Uri): Set<String>? = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, treeUri)
+        if (root == null || !root.canRead()) return@withContext null
+        val audio = mutableListOf<Candidate>()
+        collect(root, "", 0, audio, mutableListOf())
+        audio.mapTo(HashSet()) { it.uri.toString() }
+    }
+
     suspend fun importFiles(
         context: Context,
         uris: List<Uri>,

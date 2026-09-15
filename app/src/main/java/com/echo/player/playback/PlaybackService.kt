@@ -3,12 +3,14 @@ package com.echo.player.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.MediaMetadataRetriever
+import android.media.audiofx.DynamicsProcessing
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.OptIn
+import androidx.annotation.RequiresApi
 import androidx.core.content.IntentCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -25,6 +27,12 @@ import androidx.media3.session.MediaSessionService
 import com.echo.player.EchoApp
 import com.echo.player.MainActivity
 import com.echo.player.data.LibraryRepository
+import com.echo.player.data.ListeningSession
+import com.echo.player.data.Settings
+import com.echo.player.util.rewindAfter
+import com.echo.player.widget.ResumeWidget
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +41,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -65,10 +75,43 @@ class PlaybackService : MediaSessionService() {
 
     private data class MeasuredTags(val bitrate: Int?, val bitsPerSample: Int?)
 
+    /** When the listener last paused, so pressing play again can step back by the time away. */
+    private var pausedAt: Long? = null
+
+    /** The stretch of listening in progress, written to the log every few seconds. */
+    private var session: ListeningSession? = null
+    private var lastHeardAt = 0L
+    private val sessionLock = Mutex()
+
+    /** Row id of each session already written, by its start time. Guarded by [sessionLock]. */
+    private val sessionRows = HashMap<Long, Long>()
+
+    private var levelVolume = false
+    private var leveller: DynamicsProcessing? = null
+
     private val listener = object : Player.Listener {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             saveProgress()
+            if (!isPlaying) flushSession()
+            ResumeWidget.update(this@PlaybackService, isPlaying)
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (!playWhenReady) {
+                pausedAt = SystemClock.elapsedRealtime()
+                return
+            }
+            // Coming back from a pause: a few seconds after a moment away, more after days.
+            val since = pausedAt ?: return
+            pausedAt = null
+            if (player.mediaItemCount == 0) return
+            val back = rewindAfter(SystemClock.elapsedRealtime() - since)
+            player.seekTo((player.currentPosition - back).coerceAtLeast(0L))
+        }
+
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            applyLevelling()
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -77,6 +120,8 @@ class PlaybackService : MediaSessionService() {
                 // move does. Without this, opening a series (which rewinds 15s) would save the
                 // rewound point and walk the book backwards a little further every time.
                 suppressSavesUntil = SystemClock.elapsedRealtime() + LOAD_SETTLE_MS
+                // A freshly loaded queue already starts at its own rewound point.
+                pausedAt = null
             }
         }
 
@@ -85,6 +130,7 @@ class PlaybackService : MediaSessionService() {
             // A skip moves on without crediting the chapter it left.
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) markFinished(currentItemId)
             currentItemId = mediaItem?.mediaId
+            NowPlaying.loadedBookId = MediaIds.parse(mediaItem?.mediaId)?.bookId
 
             // The position now reads as "start of the next chapter", which is exactly the
             // resume point we want once a chapter has been listened through.
@@ -118,6 +164,8 @@ class PlaybackService : MediaSessionService() {
             reason: Int
         ) {
             if (reason != Player.DISCONTINUITY_REASON_SEEK) return
+            // A deliberate move while paused is honoured exactly when play is pressed.
+            pausedAt = null
             // Leaving one chapter for another: keep the exact spot it was left at, so going back
             // to it resumes there instead of starting over. A scrub within a chapter is not
             // recorded as listening.
@@ -176,6 +224,10 @@ class PlaybackService : MediaSessionService() {
             controllerInfo: MediaSession.ControllerInfo,
             intent: Intent
         ): Boolean {
+            // Nothing loaded (the widget, or a headset after a reboot): let Media3 ask
+            // onPlaybackResumption for the series you were listening to.
+            if (player.mediaItemCount == 0) return false
+
             val event = IntentCompat.getParcelableExtra(
                 intent,
                 Intent.EXTRA_KEY_EVENT,
@@ -194,6 +246,32 @@ class PlaybackService : MediaSessionService() {
                 }
             }
             return true
+        }
+
+        /** Picks up the last series from outside the app, rewound by the time away. */
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val result = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            serviceScope.launch {
+                val last = runCatching { repository.lastPlayed() }.getOrNull()
+                if (last == null || last.chapters.isEmpty()) {
+                    result.setException(IllegalStateException("Nothing to resume"))
+                    return@launch
+                }
+                val book = last.book
+                val awayMs = System.currentTimeMillis() - book.lastPlayedAt
+                player.setPlaybackSpeed(book.playbackSpeed)
+                result.set(
+                    MediaSession.MediaItemsWithStartPosition(
+                        last.chapters.map { it.toMediaItem(book) },
+                        book.currentChapterIndex.coerceIn(0, last.chapters.lastIndex),
+                        (book.currentPositionMs - rewindAfter(awayMs)).coerceAtLeast(0L)
+                    )
+                )
+            }
+            return result
         }
     }
 
@@ -233,6 +311,13 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         startHeartbeat()
+
+        serviceScope.launch {
+            Settings.levelVolume(this@PlaybackService).collect { on ->
+                levelVolume = on
+                applyLevelling()
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
@@ -249,6 +334,11 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         saveProgressBlocking()
+        flushSession(blocking = true)
+        NowPlaying.loadedBookId = null
+        ResumeWidget.update(this, isPlaying = false)
+        leveller?.release()
+        leveller = null
         serviceScope.cancel()
         SleepTimer.cancel()
         NowPlaying.publish(null)
@@ -278,10 +368,12 @@ class PlaybackService : MediaSessionService() {
                     continue
                 }
 
+                logListening(elapsed)
                 ticks++
                 if (ticks % SAVE_EVERY_TICKS == 0) {
                     saveProgress()
                     recordListened()
+                    flushSession()
                 }
             }
         }
@@ -307,6 +399,97 @@ class PlaybackService : MediaSessionService() {
         appScope.launch {
             repository.recordListened(point.bookId, point.chapterIndex, point.positionMs)
         }
+    }
+
+    /** Adds one heartbeat of real listening to the session in progress, or starts a new one. */
+    private fun logListening(elapsedMs: Long) {
+        val bookId = MediaIds.parse(player.currentMediaItem?.mediaId)?.bookId ?: return
+        val heard = elapsedMs.coerceIn(0L, MAX_TICK_MS)
+        val covered = (heard * player.playbackParameters.speed).toLong()
+        val nowReal = SystemClock.elapsedRealtime()
+        val nowWall = System.currentTimeMillis()
+        val open = session
+        session = if (open == null || open.bookId != bookId || nowReal - lastHeardAt > SESSION_GAP_MS) {
+            open?.let { flushSession() }
+            ListeningSession(
+                bookId = bookId,
+                startedAt = nowWall - heard,
+                endedAt = nowWall,
+                wallMs = heard,
+                audioMs = covered
+            )
+        } else {
+            open.copy(endedAt = nowWall, wallMs = open.wallMs + heard, audioMs = open.audioMs + covered)
+        }
+        lastHeardAt = nowReal
+    }
+
+    /** Writes the session in progress. The first write inserts it; later ones update that row. */
+    private fun flushSession(blocking: Boolean = false) {
+        val snapshot = session ?: return
+        if (snapshot.wallMs <= 0L) return
+        val write: suspend () -> Unit = {
+            sessionLock.withLock {
+                val known = sessionRows[snapshot.startedAt] ?: 0L
+                val row = repository.saveSession(snapshot.copy(id = known))
+                sessionRows[snapshot.startedAt] = if (known != 0L) known else row
+            }
+        }
+        if (blocking) {
+            runCatching { runBlocking { write() } }
+                .onFailure { Log.w(TAG, "Could not save listening log", it) }
+        } else {
+            appScope.launch { write() }
+        }
+    }
+
+    /**
+     * Evens out quiet and loud passages with a gentle compressor and a limiter. Only on Android 9
+     * and newer, where the platform provides the effect.
+     *
+     * ponytail: fixed settings chosen without listening tests; expose a strength if it is too much
+     * or too little.
+     */
+    private fun applyLevelling() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return
+        leveller?.release()
+        leveller = null
+        val sessionId = player.audioSessionId
+        if (!levelVolume || sessionId == C.AUDIO_SESSION_ID_UNSET) return
+        leveller = runCatching { buildLeveller(sessionId) }
+            .onFailure { Log.w(TAG, "Volume levelling unavailable", it) }
+            .getOrNull()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun buildLeveller(sessionId: Int): DynamicsProcessing {
+        val band = DynamicsProcessing.MbcBand(
+            /* enabled = */ true,
+            /* cutoffFrequency = */ 20_000f,
+            /* attackTime = */ 5f,
+            /* releaseTime = */ 250f,
+            /* ratio = */ 3f,
+            /* threshold = */ -30f,
+            /* kneeWidth = */ 6f,
+            /* noiseGateThreshold = */ -90f,
+            /* expanderRatio = */ 1f,
+            /* preGain = */ 0f,
+            /* postGain = */ 8f
+        )
+        val mbc = DynamicsProcessing.Mbc(true, true, 1).apply { setBand(0, band) }
+        val limiter = DynamicsProcessing.Limiter(true, true, 0, 1f, 60f, 10f, -2f, 0f)
+        val config = DynamicsProcessing.Config.Builder(
+            DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+            /* channelCount = */ 2,
+            /* preEqInUse = */ false, 0,
+            /* mbcInUse = */ true, 1,
+            /* postEqInUse = */ false, 0,
+            /* limiterInUse = */ true
+        )
+            .setMbcAllChannelsTo(mbc)
+            .setLimiterAllChannelsTo(limiter)
+            .build()
+        return DynamicsProcessing(0, sessionId, config).apply { enabled = true }
     }
 
     private fun markFinished(mediaId: String?) {
@@ -430,5 +613,11 @@ class PlaybackService : MediaSessionService() {
         private const val TICK_MS = 1_000L
         private const val SAVE_EVERY_TICKS = 5
         private const val LOAD_SETTLE_MS = 1_000L
+
+        /** A pause longer than this starts a new listening session. */
+        private const val SESSION_GAP_MS = 2 * 60_000L
+
+        /** One heartbeat never counts for more than this, whatever the clock says. */
+        private const val MAX_TICK_MS = 5_000L
     }
 }

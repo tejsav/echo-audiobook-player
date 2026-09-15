@@ -39,5 +39,25 @@
             </intent-filter>
         </service>
 
+        <receiver
+            android:name=".widget.ResumeWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/echo_widget_info" />
+        </receiver>
+
+        <!-- Lets the widget, a headset or the system media card start the last series. -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>

@@ -4,9 +4,12 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.echo.player.data.BackupBook
 import com.echo.player.data.Book
+import com.echo.player.data.Bookmark
 import com.echo.player.data.BookImporter
 import com.echo.player.data.Chapter
+import com.echo.player.data.Settings
 import com.echo.player.echoApp
 import com.echo.player.playback.AudioStats
 import com.echo.player.playback.NowPlaying
@@ -14,18 +17,24 @@ import com.echo.player.playback.PlaybackService
 import com.echo.player.playback.PlaybackUiState
 import com.echo.player.playback.SleepMode
 import com.echo.player.playback.SleepTimer
+import com.echo.player.stats.ListeningStats
+import com.echo.player.stats.computeStats
 import com.echo.player.util.formatClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.ZoneId
 
 private typealias ProgressReporter = suspend (BookImporter.Progress) -> Unit
 
@@ -78,6 +87,36 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repository.chapters(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val selectedBookmarks: StateFlow<List<Bookmark>> = _selectedId
+        .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repository.bookmarks(id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Worked out from the log only while the stats screen is watching. */
+    val listening: StateFlow<ListeningStats?> = combine(
+        repository.sessions,
+        repository.completionTimes,
+        repository.doneCounts,
+        repository.books
+    ) { sessions, completions, done, books ->
+        computeStats(
+            sessions = sessions,
+            completionTimes = completions,
+            doneByBook = done.associate { it.bookId to it.done },
+            books = books,
+            now = System.currentTimeMillis(),
+            zone = ZoneId.systemDefault()
+        )
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val levelVolume: StateFlow<Boolean> = Settings.levelVolume(application)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** Series from a restored backup that still need their folder picked on this device. */
+    private val _unlinked = MutableStateFlow<List<BackupBook>>(emptyList())
+    val unlinked: StateFlow<List<BackupBook>> = _unlinked.asStateFlow()
+
     private val _importState = MutableStateFlow(ImportUiState())
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
 
@@ -99,6 +138,18 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
      * handed to the player as an exact start so the 15 second pick-up rewind does not undo it.
      */
     private var exactStart: Pair<String, Long>? = null
+
+    init {
+        viewModelScope.launch {
+            repository.fillNamePrefixes()
+            val grew = repository.pickUpNewFiles { id ->
+                NowPlaying.loadedBookId == id || playback.value.bookId == id
+            }
+            if (grew > 0) {
+                _message.value = "New files found in $grew series"
+            }
+        }
+    }
 
     fun select(bookId: String?) {
         _selectedId.value = bookId
@@ -239,6 +290,81 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
     fun setSpeed(book: Book, speed: Float) {
         if (isLoaded(book)) connection.setSpeed(speed)
         viewModelScope.launch { repository.saveSpeed(book.id, speed) }
+    }
+
+    // -- bookmarks and names --------------------------------------------------------------------
+
+    /** Marks where you are right now in [book]: the live position when it is loaded. */
+    fun addBookmark(book: Book) {
+        val live = isLoaded(book)
+        val index = if (live) playback.value.chapterIndex else book.currentChapterIndex
+        val position = if (live) playback.value.positionMs else book.currentPositionMs
+        viewModelScope.launch {
+            val chapter = repository.bookWithChapters(book.id)?.chapters?.getOrNull(index)
+                ?: return@launch
+            repository.addBookmark(book.id, chapter.uri, position)
+        }
+    }
+
+    fun setBookmarkNote(id: Long, note: String) {
+        viewModelScope.launch { repository.setBookmarkNote(id, note) }
+    }
+
+    fun deleteBookmark(id: Long) {
+        viewModelScope.launch { repository.deleteBookmark(id) }
+    }
+
+    /** Display only. The queue is rebuilt so the notification shows the same names. */
+    fun setTidyNames(book: Book, tidy: Boolean) {
+        viewModelScope.launch {
+            repository.setTidyNames(book.id, tidy)
+            repository.bookWithChapters(book.id)?.let { loaded ->
+                connection.refreshMetadata(loaded.book, loaded.chapters)
+            }
+        }
+    }
+
+    fun setLevelVolume(on: Boolean) {
+        viewModelScope.launch { Settings.setLevelVolume(getApplication(), on) }
+    }
+
+    // -- backup and restore ---------------------------------------------------------------------
+
+    fun writeBackup(target: Uri) {
+        viewModelScope.launch {
+            _message.value = try {
+                repository.writeBackup(target)
+                "Backup saved"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.message ?: "The backup could not be saved"
+            }
+        }
+    }
+
+    fun restoreBackup(source: Uri) {
+        viewModelScope.launch {
+            _message.value = try {
+                val waiting = repository.restore(repository.readBackup(source))
+                _unlinked.value = waiting
+                if (waiting.isEmpty()) "Backup restored" else "Restored. Pick folders for " + waiting.size + " series"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.message ?: "That backup could not be restored"
+            }
+        }
+    }
+
+    fun relink(saved: BackupBook, treeUri: Uri) = startImport { report ->
+        repository.relink(saved, treeUri, report).also {
+            _unlinked.value = _unlinked.value.filter { it !== saved }
+        }
+    }
+
+    fun skipRelink(saved: BackupBook) {
+        _unlinked.value = _unlinked.value.filter { it !== saved }
     }
 
     // -- sleep timer ----------------------------------------------------------------------------

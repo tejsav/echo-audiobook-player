@@ -88,15 +88,17 @@ interface LibraryDao {
     suspend fun recordListened(bookId: String, chapterIndex: Int, positionMs: Long)
 
     @Query(
-        "UPDATE chapters SET completed = 1, listenedMs = MAX(listenedMs, durationMs) " +
+        "UPDATE chapters SET completed = 1, listenedMs = MAX(listenedMs, durationMs), " +
+            "completedAt = IFNULL(completedAt, :finishedAt) " +
             "WHERE bookId = :bookId AND chapter_index = :chapterIndex"
     )
-    suspend fun markCompleted(bookId: String, chapterIndex: Int)
+    suspend fun markCompleted(bookId: String, chapterIndex: Int, finishedAt: Long)
 
     /** Clearing a mark also clears what was heard, so the row honestly reads as unplayed again. */
     @Query(
         "UPDATE chapters SET completed = :completed, " +
-            "listenedMs = CASE WHEN :completed THEN MAX(listenedMs, durationMs) ELSE 0 END " +
+            "listenedMs = CASE WHEN :completed THEN MAX(listenedMs, durationMs) ELSE 0 END, " +
+            "completedAt = CASE WHEN :completed THEN completedAt ELSE NULL END " +
             "WHERE bookId = :bookId AND chapter_index = :chapterIndex"
     )
     suspend fun setCompleted(bookId: String, chapterIndex: Int, completed: Boolean)
@@ -106,6 +108,87 @@ interface LibraryDao {
             "WHERE bookId = :bookId AND chapter_index < :chapterIndex"
     )
     suspend fun completeBefore(bookId: String, chapterIndex: Int)
+
+    // -- listening log -------------------------------------------------------------------------
+
+    /** Inserts a new session, or rewrites one still in progress (same id). */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveSession(session: ListeningSession): Long
+
+    @Insert
+    suspend fun insertSessions(sessions: List<ListeningSession>)
+
+    @Query("SELECT * FROM listening_sessions ORDER BY startedAt ASC")
+    fun observeSessions(): Flow<List<ListeningSession>>
+
+    @Query("SELECT * FROM listening_sessions")
+    suspend fun allSessions(): List<ListeningSession>
+
+    @Query("UPDATE listening_sessions SET bookId = :newId WHERE bookId = :oldId")
+    suspend fun moveSessions(oldId: String, newId: String)
+
+    @Query("SELECT completedAt FROM chapters WHERE completedAt IS NOT NULL")
+    fun observeCompletionTimes(): Flow<List<Long>>
+
+    @Query("SELECT bookId, COUNT(*) AS done FROM chapters WHERE completed = 1 GROUP BY bookId")
+    fun observeDoneCounts(): Flow<List<DoneCount>>
+
+    // -- bookmarks ------------------------------------------------------------------------------
+
+    @Insert
+    suspend fun insertBookmark(bookmark: Bookmark): Long
+
+    @Insert
+    suspend fun insertBookmarks(bookmarks: List<Bookmark>)
+
+    @Query("UPDATE bookmarks SET note = :note WHERE id = :id")
+    suspend fun updateBookmarkNote(id: Long, note: String)
+
+    @Query("DELETE FROM bookmarks WHERE id = :id")
+    suspend fun deleteBookmark(id: Long)
+
+    @Query("DELETE FROM bookmarks WHERE bookId = :bookId")
+    suspend fun deleteBookmarksFor(bookId: String)
+
+    @Query("SELECT * FROM bookmarks WHERE bookId = :bookId ORDER BY createdAt DESC")
+    fun observeBookmarks(bookId: String): Flow<List<Bookmark>>
+
+    @Query("SELECT * FROM bookmarks")
+    suspend fun allBookmarks(): List<Bookmark>
+
+    // -- names, backup and restore --------------------------------------------------------------
+
+    @Query("UPDATE books SET tidyNames = :tidy WHERE id = :bookId")
+    suspend fun updateTidyNames(bookId: String, tidy: Boolean)
+
+    @Query("UPDATE books SET namePrefix = :prefix WHERE id = :bookId")
+    suspend fun updateNamePrefix(bookId: String, prefix: String)
+
+    @Query("SELECT * FROM books")
+    suspend fun allBooks(): List<Book>
+
+    @Query("SELECT * FROM books WHERE lastPlayedAt > 0 ORDER BY lastPlayedAt DESC LIMIT 1")
+    suspend fun lastPlayedOnce(): Book?
+
+    @Query(
+        "UPDATE books SET title = :title, author = :author, playbackSpeed = :speed, " +
+            "tidyNames = :tidy WHERE id = :bookId"
+    )
+    suspend fun restoreDetails(bookId: String, title: String, author: String?, speed: Float, tidy: Boolean)
+
+    @Query(
+        "UPDATE chapters SET listenedMs = MAX(listenedMs, :listenedMs), " +
+            "completed = MAX(completed, :completed), " +
+            "completedAt = IFNULL(completedAt, :completedAt) " +
+            "WHERE bookId = :bookId AND chapter_index = :chapterIndex"
+    )
+    suspend fun mergeChapterMarks(
+        bookId: String,
+        chapterIndex: Int,
+        listenedMs: Long,
+        completed: Boolean,
+        completedAt: Long?
+    )
 
     @Transaction
     suspend fun replaceBook(book: Book, chapters: List<Chapter>) {
