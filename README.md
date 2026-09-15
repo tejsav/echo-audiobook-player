@@ -93,12 +93,10 @@ switch, backup and restore.
 
 Download an APK from [Releases](../../releases), or build it yourself.
 
-**Getting updates automatically.** ECHO has no internet access, so it cannot update itself. Install
-[Obtainium](https://github.com/ImranR98/Obtainium) and add this repository's URL; it watches the
-releases and offers each new version with one tap.
-
-Updates install over the existing app only when they are signed with the same key. Make a backup
-before switching between builds from different sources.
+To update, install the newer APK over the app you have; your library and progress stay. ECHO has
+no internet access, so it never updates itself. An update only installs over the existing app when
+it is signed with the same key, so make a backup before switching between builds from different
+sources.
 
 ## Build
 
