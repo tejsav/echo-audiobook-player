@@ -54,6 +54,8 @@ internal fun LibrarySheet(
     onLevelVolume: (Boolean) -> Unit,
     onBackUp: () -> Unit,
     onRestore: () -> Unit,
+    updateNote: String,
+    onUpdates: () -> Unit,
     onRelink: (BackupBook) -> Unit,
     onSkipRelink: (BackupBook) -> Unit
 ) {
@@ -135,6 +137,11 @@ internal fun LibrarySheet(
             note = "From a backup file. Series already here update straight away; others ask for their folder.",
             onClick = onRestore
         )
+
+        Spacer(Modifier.height(26.dp))
+        Text("UPDATES", style = EchoType.Label, color = Paper.InkSoft)
+        Spacer(Modifier.height(12.dp))
+        SheetRow(title = "Updates", note = updateNote, onClick = onUpdates)
     }
 }
 

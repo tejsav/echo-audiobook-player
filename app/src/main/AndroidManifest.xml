@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Only for reading shared Google Drive catalogs and downloading from them. Playback never uses it. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ECHO installs its own updates from GitHub releases. Android asks once. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <application
         android:name=".EchoApp"
@@ -51,6 +54,11 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/echo_widget_info" />
         </receiver>
+
+        <!-- Hears back from Android once an update has been installed, or needs a tap. -->
+        <receiver
+            android:name=".update.UpdateReceiver"
+            android:exported="false" />
 
         <!-- Adds a Drive book to the library once its last file has downloaded. -->
         <receiver

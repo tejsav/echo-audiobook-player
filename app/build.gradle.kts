@@ -27,6 +27,8 @@ android {
         versionName = "1.3"
         vectorDrawables { useSupportLibrary = true }
         buildConfigField("String", "DRIVE_API_KEY", "\"$driveApiKey\"")
+        // Where the app looks for its own updates. A fork should point this at its own releases.
+        buildConfigField("String", "UPDATE_REPO", "\"tejsav/echo-audiobook-player\"")
     }
 
     buildTypes {

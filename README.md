@@ -133,10 +133,15 @@ switch, backup and restore.
 
 Download an APK from [Releases](../../releases), or build it yourself.
 
-To update, install the newer APK over the app you have; your library and progress stay. ECHO
-never updates itself. An update only installs over the existing app when
-it is signed with the same key, so make a backup before switching between builds from different
-sources.
+**Updates install themselves** from this repository's releases. The first time an update is
+available, ECHO asks you to allow it to install apps; that is a one-time Android switch. After that,
+on Android 12 and newer, a new version downloads and installs by itself the next time you leave the
+app with nothing playing, and the next launch says "Updated". On Android 8–11, or wherever Android
+still wants a say, it takes one tap. The status is under `+` → Updates.
+
+Android only accepts an update signed with the same key as the installed app, so an APK from
+anywhere else cannot replace yours this way. Make a backup before switching between builds from
+different sources.
 
 ## Build
 

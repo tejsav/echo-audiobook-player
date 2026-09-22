@@ -58,6 +58,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,6 +77,7 @@ import com.echo.player.ui.dial.DialContent
 import com.echo.player.ui.dial.PlayButton
 import com.echo.player.ui.dial.paperGrid
 import com.echo.player.ui.library.LibraryScreen
+import com.echo.player.update.UpdateUi
 import com.echo.player.ui.stats.StatsScreen
 import com.echo.player.ui.theme.EchoType
 import com.echo.player.ui.theme.Paper
@@ -111,6 +113,8 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
     val bookmarks by viewModel.selectedBookmarks.collectAsStateWithLifecycle()
     val levelVolume by viewModel.levelVolume.collectAsStateWithLifecycle()
     val unlinked by viewModel.unlinked.collectAsStateWithLifecycle()
+    val update by viewModel.update.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showAddSheet by remember { mutableStateOf(false) }
@@ -167,6 +171,30 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
         if (text != null) {
             snackbarHostState.showSnackbar(text)
             viewModel.consumeMessage()
+        }
+    }
+
+    // Updates install by themselves where Android allows it; otherwise ask once, here.
+    LaunchedEffect(update.available?.version, update.allowed, update.needsConfirm) {
+        val version = update.available?.version ?: return@LaunchedEffect
+        if (!viewModel.updatesEnabled) return@LaunchedEffect
+        val action = when {
+            update.needsConfirm -> "Install"
+            !update.allowed -> "Allow"
+            !viewModel.silentUpdates -> "Install"
+            else -> return@LaunchedEffect
+        }
+        val result = snackbarHostState.showSnackbar(
+            message = "ECHO $version is available",
+            actionLabel = action,
+            duration = SnackbarDuration.Long
+        )
+        if (result == SnackbarResult.ActionPerformed) {
+            when {
+                update.needsConfirm -> viewModel.confirmUpdate()
+                !update.allowed -> context.startActivity(viewModel.updatePermissionIntent())
+                else -> viewModel.installUpdate()
+            }
         }
     }
 
@@ -419,7 +447,17 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                     relinkId = saved.book.id
                     relinkPicker.launch(null)
                 },
-                onSkipRelink = viewModel::skipRelink
+                onSkipRelink = viewModel::skipRelink,
+                updateNote = updateNote(update, viewModel.updatesEnabled, viewModel.silentUpdates),
+                onUpdates = {
+                    when {
+                        !viewModel.updatesEnabled -> Unit
+                        update.needsConfirm -> viewModel.confirmUpdate()
+                        !update.allowed -> context.startActivity(viewModel.updatePermissionIntent())
+                        update.available != null -> viewModel.installUpdate()
+                        else -> viewModel.checkForUpdate()
+                    }
+                }
             )
         }
     }
@@ -747,6 +785,21 @@ private fun tidyExample(book: Book, chapters: List<Chapter>, currentIndex: Int):
     val raw = chapters.getOrNull(currentIndex)?.title ?: chapters.firstOrNull()?.title ?: return null
     val prefix = book.namePrefix ?: sharedPrefix(chapters.map { it.title })
     return raw to tidyChapterTitle(raw, prefix, book.title)
+}
+
+private fun updateNote(update: UpdateUi, enabled: Boolean, silent: Boolean): String {
+    val next = update.available?.version
+    return when {
+        !enabled -> "Updates are off in this build."
+        update.installing -> "Installing ECHO $next…"
+        update.needsConfirm -> "ECHO $next is ready. Tap to install."
+        next != null && !update.allowed -> "ECHO $next is available. Tap to allow updates, once."
+        next != null && silent -> "ECHO $next installs by itself next time you leave the app. Tap to install now; ECHO will close."
+        next != null -> "ECHO $next is available. Tap to install."
+        !update.allowed -> "ECHO ${update.current}. Tap to allow updates once, so new versions install by themselves."
+        update.error != null -> update.error + " Tap to try again."
+        else -> "ECHO ${update.current} is up to date. Tap to check again."
+    }
 }
 
 private fun headerSubtitle(book: Book?, count: Int): String = when {

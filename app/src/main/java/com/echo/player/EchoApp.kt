@@ -5,6 +5,7 @@ import android.content.Context
 import com.echo.player.data.LibraryRepository
 import com.echo.player.drive.DriveLibrary
 import com.echo.player.playback.PlayerConnection
+import com.echo.player.update.Updater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -27,6 +28,8 @@ class EchoApp : Application() {
     val playerConnection: PlayerConnection by lazy { PlayerConnection(this) }
 
     val drive: DriveLibrary by lazy { DriveLibrary(this, repository) }
+
+    val updater: Updater by lazy { Updater(this, applicationScope) }
 }
 
 val Context.echoApp: EchoApp

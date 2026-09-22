@@ -9,7 +9,9 @@ import com.echo.player.data.Book
 import com.echo.player.data.Bookmark
 import com.echo.player.data.BookImporter
 import com.echo.player.data.Chapter
+import com.echo.player.BuildConfig
 import com.echo.player.data.Settings
+import com.echo.player.update.UpdateUi
 import com.echo.player.echoApp
 import com.echo.player.playback.AudioStats
 import com.echo.player.playback.NowPlaying
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -295,6 +298,31 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
         if (isLoaded(book)) connection.setSpeed(speed)
         viewModelScope.launch { repository.saveSpeed(book.id, speed) }
     }
+
+    // -- updates --------------------------------------------------------------------------------
+
+    private val updater = application.echoApp.updater
+    val update: StateFlow<UpdateUi> = updater.state
+    val updatesEnabled: Boolean = updater.enabled
+    val silentUpdates: Boolean = updater.silent
+
+    init {
+        // Updates install quietly, so say so the first time the new version opens.
+        viewModelScope.launch {
+            val current = BuildConfig.VERSION_NAME
+            val last = Settings.lastRunVersion(application).first()
+            if (last != null && last != current) _message.value = "Updated to ECHO $current"
+            if (last != current) Settings.setLastRunVersion(application, current)
+        }
+    }
+
+    fun checkForUpdate() = updater.checkNow()
+
+    fun installUpdate() = updater.installNow()
+
+    fun confirmUpdate() = updater.confirm()
+
+    fun updatePermissionIntent() = updater.permissionIntent()
 
     // -- bookmarks and names --------------------------------------------------------------------
 

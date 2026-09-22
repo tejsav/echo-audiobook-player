@@ -45,9 +45,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         echoApp.playerConnection.connect()
+        echoApp.updater.onForeground()
     }
 
     override fun onStop() {
+        // An update may install now, but never over something playing.
+        echoApp.updater.onBackground(isPlaying = echoApp.playerConnection.state.value.isPlaying)
         // Playback keeps running in the service; only the UI's controller goes away.
         echoApp.playerConnection.release()
         super.onStop()

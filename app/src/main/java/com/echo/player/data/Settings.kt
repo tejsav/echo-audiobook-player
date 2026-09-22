@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -15,6 +16,7 @@ private val Context.settingsStore by preferencesDataStore(name = "settings")
 private val LEVEL_VOLUME = booleanPreferencesKey("level_volume")
 private val DRIVE_CATALOGS = stringSetPreferencesKey("drive_catalogs")
 private val DRIVE_WIFI_ONLY = booleanPreferencesKey("drive_wifi_only")
+private val LAST_RUN_VERSION = stringPreferencesKey("last_run_version")
 
 /** App-wide switches. */
 object Settings {
@@ -50,5 +52,15 @@ object Settings {
 
     suspend fun setDriveWifiOnly(context: Context, on: Boolean) {
         context.applicationContext.settingsStore.edit { it[DRIVE_WIFI_ONLY] = on }
+    }
+
+    /** The version that last ran, so an update that happened quietly can be mentioned. */
+    fun lastRunVersion(context: Context): Flow<String?> =
+        context.applicationContext.settingsStore.data
+            .catch { emit(emptyPreferences()) }
+            .map { it[LAST_RUN_VERSION] }
+
+    suspend fun setLastRunVersion(context: Context, version: String) {
+        context.applicationContext.settingsStore.edit { it[LAST_RUN_VERSION] = version }
     }
 }
