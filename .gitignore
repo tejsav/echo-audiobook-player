@@ -9,3 +9,6 @@ captures/
 .cxx
 *.apk
 *.keystore
+
+# Kotlin compiler session files
+.kotlin/
