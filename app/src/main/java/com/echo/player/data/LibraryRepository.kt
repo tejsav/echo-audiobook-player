@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import com.echo.player.drive.DRIVE_SOURCE_PREFIX
+import com.echo.player.drive.downloadDirFor
 import com.echo.player.util.sharedPrefix
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -265,7 +267,12 @@ class LibraryRepository(private val context: Context) {
         )
         val unlinked = mutableListOf<BackupBook>()
         for (saved in backup.books) {
-            if (dao.getBook(saved.book.id) != null) applyBackup(saved.book.id, saved) else unlinked += saved
+            when {
+                dao.getBook(saved.book.id) != null -> applyBackup(saved.book.id, saved)
+                // A Drive series comes back by downloading it again; its history waits for it.
+                saved.book.sourceUri.startsWith(DRIVE_SOURCE_PREFIX) -> savePendingRestore(saved)
+                else -> unlinked += saved
+            }
         }
         return unlinked
     }
@@ -332,12 +339,37 @@ class LibraryRepository(private val context: Context) {
         )
     }
 
+    /** Adds (or refreshes) a book whose files have finished downloading into ECHO's storage. */
+    suspend fun importDownloaded(dir: File, sourceUri: String, title: String): Book {
+        val book = commit(BookImporter.importDirectory(context, dir, sourceUri, title) { })
+        takePendingRestore(book.id)?.let { applyBackup(book.id, it) }
+        return dao.getBook(book.id) ?: book
+    }
+
+    private fun pendingRestoreFile(bookId: String) = File(context.filesDir, "pending-restore/$bookId.json")
+
+    private suspend fun savePendingRestore(saved: BackupBook) = withContext(Dispatchers.IO) {
+        val file = pendingRestoreFile(saved.book.id)
+        file.parentFile?.mkdirs()
+        file.writeText(BackupCodec.encode(Backup(0L, listOf(saved), emptyList())))
+    }
+
+    private suspend fun takePendingRestore(bookId: String): BackupBook? = withContext(Dispatchers.IO) {
+        val file = pendingRestoreFile(bookId)
+        if (!file.exists()) return@withContext null
+        runCatching { BackupCodec.decode(file.readText()).books.firstOrNull() }
+            .getOrNull()
+            .also { file.delete() }
+    }
+
     suspend fun deleteBook(book: Book) = withContext(Dispatchers.IO) {
         dao.deleteBook(book.id)
         // Listening time stays in the log on purpose; bookmarks have nothing left to point at.
         dao.deleteBookmarksFor(book.id)
         CoverStore.deleteOthers(context, book.id, keep = null)
         release(book.sourceUri)
+        // A downloaded Drive book's files belong to the series; they go with it.
+        downloadDirFor(context, book.sourceUri)?.deleteRecursively()
     }
 
     /** Keeps read access across reboots for a document or tree the user picked. */

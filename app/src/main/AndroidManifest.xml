@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Only for reading shared Google Drive catalogs and downloading from them. Playback never uses it. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".EchoApp"
@@ -48,6 +50,15 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/echo_widget_info" />
+        </receiver>
+
+        <!-- Adds a Drive book to the library once its last file has downloaded. -->
+        <receiver
+            android:name=".drive.DownloadDoneReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
         </receiver>
 
         <!-- Lets the widget, a headset or the system media card start the last series. -->

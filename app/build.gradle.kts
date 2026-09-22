@@ -1,10 +1,18 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+// The Google Drive API key used to read shared catalogs. It lives in local.properties, which is
+// never committed: echo.driveApiKey=... Without it the app builds and simply cannot read Drive.
+val driveApiKey: String = Properties().run {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    getProperty("echo.driveApiKey", "")
 }
 
 android {
@@ -18,6 +26,7 @@ android {
         versionCode = 3
         versionName = "1.2"
         vectorDrawables { useSupportLibrary = true }
+        buildConfigField("String", "DRIVE_API_KEY", "\"$driveApiKey\"")
     }
 
     buildTypes {
@@ -46,6 +55,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

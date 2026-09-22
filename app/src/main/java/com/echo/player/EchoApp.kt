@@ -3,6 +3,7 @@ package com.echo.player
 import android.app.Application
 import android.content.Context
 import com.echo.player.data.LibraryRepository
+import com.echo.player.drive.DriveLibrary
 import com.echo.player.playback.PlayerConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +25,8 @@ class EchoApp : Application() {
     val repository: LibraryRepository by lazy { LibraryRepository(this) }
 
     val playerConnection: PlayerConnection by lazy { PlayerConnection(this) }
+
+    val drive: DriveLibrary by lazy { DriveLibrary(this, repository) }
 }
 
 val Context.echoApp: EchoApp

@@ -14,7 +14,8 @@ button, and a resume point that survives reboots.
 ## Why
 
 Most audiobook apps want your account, your library, and a network connection. This one wants a
-folder. It has no internet permission at all — not "offline mode", no networking code in the app.
+folder. Playback never touches the network. The only networking is optional: reading Google Drive
+catalogs someone has shared with you, and downloading the books you pick from them.
 
 The thing it takes seriously is the resume point. Losing your place in a 30-hour book is the one
 failure that actually matters, so the position is written continuously and the app rewinds slightly
@@ -57,6 +58,9 @@ when you come back.
   `Maha Geeta · 20`; the files and stored names never change.
 - **Backup and restore.** One file holds places, done marks, names, covers, bookmarks and the
   listening log. On a new phone, each series asks for its folder and everything is put back on it.
+- **Google Drive catalogs.** Paste the link to a shared Drive folder and every book in it is listed.
+  Download the ones you want; they play offline like any other series. See
+  [Google Drive catalogs](#google-drive-catalogs).
 - **Home-screen widget.** The last series and one button to carry on, without opening the app.
 - **Real stream details** under the disc — codec, sample rate, bitrate, channels — read from the
   file. Bit depth appears only for lossless audio; nothing is guessed.
@@ -74,6 +78,42 @@ estimated backwards, so the screen shows the date counting began.
 - Chapters that played through to the end, per week
 - Per series: first logged, days listened, time in, chapters done, and a finish date at your pace
   over the last two weeks
+
+## Google Drive catalogs
+
+A catalog is a Google Drive folder shared as **Anyone with the link**. Each folder inside it is a
+book; sub-folders such as `CD 1` and `CD 2` are part of that book. A Drive shortcut to a folder
+elsewhere works too, and a link to a folder that holds audio files directly is a single book.
+
+```
+My catalog/
+  Book one/
+    01.mp3
+    02.mp3
+    cover.jpg        optional; shown in the list and on the disc
+  Book two/          or a shortcut to a folder somewhere else in Drive
+```
+
+In ECHO: `+` → **From Google Drive** → paste the link. Downloads go through Android's download
+manager: they show in the notification bar, can wait for Wi-Fi, and carry on with the app closed.
+When a book's last file lands it joins the library. **Get new** fetches chapters added to the Drive
+folder later.
+
+ECHO ships with no catalogs, and nothing is shared unless someone shares a link. Only put books in
+a catalog that you have the right to share.
+
+### Drive API key
+
+Google requires an API key even for public folders. A build without one shows the Drive screen but
+cannot read catalogs.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable
+   the **Google Drive API**.
+2. **Credentials → Create credentials → API key.**
+3. Restrict it. API restrictions: Google Drive API. Application restrictions: Android apps, with
+   package `com.echo.player` (and `com.echo.player.debug` for debug builds) and the SHA-1 of the
+   certificate you sign with.
+4. Add `echo.driveApiKey=YOUR_KEY` to `local.properties`, which is never committed.
 
 ## The interface
 
@@ -93,8 +133,8 @@ switch, backup and restore.
 
 Download an APK from [Releases](../../releases), or build it yourself.
 
-To update, install the newer APK over the app you have; your library and progress stay. ECHO has
-no internet access, so it never updates itself. An update only installs over the existing app when
+To update, install the newer APK over the app you have; your library and progress stay. ECHO
+never updates itself. An update only installs over the existing app when
 it is signed with the same key, so make a backup before switching between builds from different
 sources.
 
@@ -150,6 +190,7 @@ navigation library.
 | Dial | `ui/dial/` | The disc, its tick ring and scrub gesture, and the accent button |
 | Screens | `ui/deck/`, `ui/stats/` | The carousel and its sheets; the stats screen |
 | Widget | `widget/ResumeWidget.kt` | `RemoteViews`; its button sends a media key |
+| Drive | `drive/`, `ui/library/` | Catalogs read through the Drive API with an API key; downloads through `DownloadManager` into app storage; state read back from disk |
 
 Things worth knowing before changing the playback code:
 
@@ -175,6 +216,8 @@ Things worth knowing before changing the playback code:
 - A chapter's heard mark is a high-water mark, so playing on after a forward scrub counts the
   skipped stretch as heard.
 - Volume levelling uses fixed settings and needs Android 9 or newer.
+- Drive catalogs skip shortcuts to single files, and every copy of a build shares its API key's
+  daily quota. Downloaded books live in app storage and are deleted with the app.
 - Covers are stored at up to 1024px on the long edge, re-encoded as JPEG.
 - Importing a large series reads tags from every file, which takes a moment. There is a progress
   panel and it can be cancelled.

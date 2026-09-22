@@ -31,6 +31,14 @@ fun formatDurationShort(ms: Long): String {
     }
 }
 
+/** `1.2 GB`, `340 MB`, `12 KB` — decimal units, as phones show storage. */
+fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000L -> String.format(Locale.US, "%.1f GB", bytes / 1e9)
+    bytes >= 1_000_000L -> String.format(Locale.US, "%.0f MB", bytes / 1e6)
+    bytes >= 1_000L -> String.format(Locale.US, "%.0f KB", bytes / 1e3)
+    else -> "$bytes B"
+}
+
 fun formatSpeed(speed: Float): String {
     val text = String.format(Locale.US, "%.2f", speed).trimEnd('0').trimEnd('.')
     return text + "x"

@@ -50,6 +50,7 @@ internal fun LibrarySheet(
     unlinked: List<BackupBook>,
     onPickFolder: () -> Unit,
     onPickFiles: () -> Unit,
+    onDriveLibrary: () -> Unit,
     onLevelVolume: (Boolean) -> Unit,
     onBackUp: () -> Unit,
     onRestore: () -> Unit,
@@ -97,6 +98,12 @@ internal fun LibrarySheet(
             note = "Pick individual tracks yourself.",
             onClick = onPickFiles
         )
+        Spacer(Modifier.height(12.dp))
+        SheetRow(
+            title = "From Google Drive",
+            note = "Browse catalogs shared with you and download the books you want.",
+            onClick = onDriveLibrary
+        )
 
         Spacer(Modifier.height(26.dp))
         Text("PLAYBACK", style = EchoType.Label, color = Paper.InkSoft)
@@ -132,7 +139,7 @@ internal fun LibrarySheet(
 }
 
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     title: String,
     note: String,
     on: Boolean,

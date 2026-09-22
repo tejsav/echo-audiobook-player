@@ -24,15 +24,6 @@ object BookImporter {
     private const val TAG = "BookImporter"
     private const val MAX_DEPTH = 5
 
-    private val AUDIO_EXTENSIONS = setOf(
-        "mp3", "m4a", "m4b", "mp4", "aac", "ogg", "oga", "opus",
-        "wav", "flac", "wma", "mka", "3gp", "amr"
-    )
-
-    private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
-
-    private val COVER_NAMES = listOf("cover", "folder", "front", "art", "artwork", "album")
-
     data class Progress(val done: Int, val total: Int, val label: String)
 
     class ImportException(message: String) : Exception(message)
@@ -82,6 +73,25 @@ object BookImporter {
         val audio = mutableListOf<Candidate>()
         collect(root, "", 0, audio, mutableListOf())
         audio.mapTo(HashSet()) { it.uri.toString() }
+    }
+
+    /** The id a series gets from where it came from, so importing it again updates it in place. */
+    fun idFor(sourceUri: String): String = UUID.nameUUIDFromBytes(sourceUri.toByteArray()).toString()
+
+    /** A folder in ECHO's own storage, such as a book downloaded from a Drive catalog. */
+    suspend fun importDirectory(
+        context: Context,
+        dir: java.io.File,
+        sourceUri: String,
+        fallbackTitle: String,
+        onProgress: suspend (Progress) -> Unit
+    ): BookWithChapters = withContext(Dispatchers.IO) {
+        val candidates = mutableListOf<Candidate>()
+        val images = mutableListOf<DocumentFile>()
+        collect(DocumentFile.fromFile(dir), "", 0, candidates, images)
+        if (candidates.isEmpty()) throw ImportException("No audio files found in \"" + fallbackTitle + "\".")
+        candidates.sortWith(compareBy(NaturalOrder) { it.sortKey })
+        build(context, sourceUri, candidates, fallbackTitle, images, onProgress)
     }
 
     suspend fun importFiles(
@@ -153,7 +163,7 @@ object BookImporter {
         folderImages: List<DocumentFile>,
         onProgress: suspend (Progress) -> Unit
     ): BookWithChapters {
-        val bookId = UUID.nameUUIDFromBytes(sourceUri.toByteArray()).toString()
+        val bookId = idFor(sourceUri)
         val total = candidates.size
 
         var album: String? = null

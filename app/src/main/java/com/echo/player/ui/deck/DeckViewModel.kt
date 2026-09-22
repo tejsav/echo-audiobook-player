@@ -148,6 +148,10 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
             if (grew > 0) {
                 _message.value = "New files found in $grew series"
             }
+            // Drive books whose downloads finished while ECHO was closed.
+            application.echoApp.drive.finishDownloads { id ->
+                NowPlaying.loadedBookId == id || playback.value.bookId == id
+            }
         }
     }
 

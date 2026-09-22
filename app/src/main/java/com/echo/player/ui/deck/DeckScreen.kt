@@ -75,6 +75,7 @@ import com.echo.player.ui.dial.Dial
 import com.echo.player.ui.dial.DialContent
 import com.echo.player.ui.dial.PlayButton
 import com.echo.player.ui.dial.paperGrid
+import com.echo.player.ui.library.LibraryScreen
 import com.echo.player.ui.stats.StatsScreen
 import com.echo.player.ui.theme.EchoType
 import com.echo.player.ui.theme.Paper
@@ -117,6 +118,9 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
     var showTracksSheet by remember { mutableStateOf(false) }
     var showBookmarksSheet by remember { mutableStateOf(false) }
     var showStats by rememberSaveable { mutableStateOf(false) }
+    var showLibrary by rememberSaveable { mutableStateOf(false) }
+    // A series to bring forward once it is in the list, e.g. after opening one from Drive.
+    var focusBookId by remember { mutableStateOf<String?>(null) }
 
     // The backup series waiting on the folder picker, by id, so it survives the trip to the picker.
     var relinkId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -206,6 +210,15 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
                 showMoreSheet = true
                 viewModel.consumeJustImported()
             }
+        }
+    }
+
+    LaunchedEffect(focusBookId, books) {
+        val id = focusBookId ?: return@LaunchedEffect
+        val index = books.indexOfFirst { it.id == id }
+        if (index >= 0) {
+            pagerState.scrollToPage(index)
+            focusBookId = null
         }
     }
 
@@ -356,6 +369,16 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             StatsScreen(stats = listening, onClose = { showStats = false })
         }
 
+        if (showLibrary) {
+            LibraryScreen(
+                onClose = { showLibrary = false },
+                onOpenBook = { id ->
+                    showLibrary = false
+                    focusBookId = id
+                }
+            )
+        }
+
         if (importState.running) {
             ImportOverlay(state = importState, onCancel = viewModel::cancelImport)
         }
@@ -370,6 +393,10 @@ fun DeckScreen(viewModel: DeckViewModel = viewModel()) {
             LibrarySheet(
                 levelVolume = levelVolume,
                 unlinked = unlinked,
+                onDriveLibrary = {
+                    showAddSheet = false
+                    showLibrary = true
+                },
                 onPickFolder = {
                     showAddSheet = false
                     folderPicker.launch(null)
